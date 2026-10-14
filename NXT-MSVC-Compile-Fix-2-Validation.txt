@@ -1,0 +1,275 @@
+Ocarina of Time NXT — MSVC compile/link fix 2 validation
+Date: 11 October 2026
+
+SOURCE BASE
+Initial OcarinaOfTime-NXT-RPG-Source.zip plus compile fix 1 and the corrections
+listed in this package. Tests use the uploaded project's real engine headers.
+
+FINAL MATRIX
+GCC 14.2, Debug:   -Werror, AddressSanitizer + UndefinedBehaviorSanitizer; passed.
+GCC 14.2, Release: -Werror; passed.
+Clang 17, Debug:   -Werror, AddressSanitizer + UndefinedBehaviorSanitizer; passed.
+Clang 17, Release: -Werror; passed.
+For both sanitized runs:
+  ASAN_OPTIONS=detect_leaks=1:halt_on_error=1
+  UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+Each configuration built AND linked the two standalone executables, and both
+CTest entries passed. The simulation reports 15 groups / 520216 assertions.
+Most assertions are arithmetic loops, not distinct gameplay scenarios.
+
+ACTOR LINK REGRESSION
+The actual production NxtActors.cpp is compiled separately from NxtActorLinkTests.cpp.
+All its external functions are resolved against real-header-checked test fixtures
+and the standard runtime; unresolved-symbol errors are not suppressed.
+The executable invokes the registered actor draw callback for 9 fixture cases:
+child bot, adult bot, ordinary enemy, each of the five world-boss telegraphs, and
+telegraph vertex-allocation failure. Fifteen interpolation scopes balance.
+Debug graph scopes and matrix scopes are checked as well.
+The rendering engine/resource boundaries are mocked. These tests do not verify
+actual assets, visual output, the interpolation algorithm, or scene correctness.
+
+NEGATIVE CONTROLS
+The new actor target was rebuilt with the original NxtActors.cpp: linkage failed
+with both missing C++-mangled interpolation symbols, as expected.
+The same target with only a global frame_interpolation.h include also failed
+with both symbols. Restoring the namespace-scoped C declarations linked.
+GCC and Clang object-symbol audits found only the expected plain C names after
+the fix, not Nxt-scoped/mangled alternatives.
+
+ADDITIONAL ABI CHECK
+A small isolated x64 Windows-ABI reproducer using the same declaration pattern
+compiled with clang-cl /W4 /WX and linked with lld-link against a separate C-ABI
+provider. It produced a PE executable; it was not executed. This is NOT an MSVC
+compilation of NxtActors.cpp or a Windows game build.
+
+SANITIZER FINDING
+The first Clang sanitized simulation run exposed the old direct conversion of
+float +32768 to int16_t in NxtCombat.cpp. This was not silently ignored: the four
+angle-conversion call sites were updated to a shared, bounded DirectionYaw helper.
+The expanded 15-group suite then passed under both sanitized compilers.
+
+LIMITATIONS
+No full Visual Studio/MSVC game compile/link or executable launch was performed.
+No GPU rendering, ROM assets, real Hyrule maps, GUI or save integration was tested
+by these fixtures. This is a tested source patch for the reported linkage failures
+and the additional angle-conversion defect, not a claim of a finished game release.
+The production interpolation implementation and game build flags are unchanged.
+
+REPRODUCTION ON LINUX (from the updated source root)
+cmake -S tests/nxt -B build/nxt-tests-check -G Ninja -DCMAKE_BUILD_TYPE=Debug -DNXT_SANITIZE=ON -DCMAKE_CXX_FLAGS=-Werror
+cmake --build build/nxt-tests-check --parallel 4
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ctest --test-dir build/nxt-tests-check -V --output-on-failure
+
+
+FINAL GCC-DEBUG TEST OUTPUT
+Internal ctest changing into directory: /mnt/data/nxt-linkfix-work/validation/gcc-debug
+UpdateCTestConfiguration  from :/mnt/data/nxt-linkfix-work/validation/gcc-debug/DartConfiguration.tcl
+UpdateCTestConfiguration  from :/mnt/data/nxt-linkfix-work/validation/gcc-debug/DartConfiguration.tcl
+Test project /mnt/data/nxt-linkfix-work/validation/gcc-debug
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 1
+    Start 1: nxt_headless
+
+1: Test command: /mnt/data/nxt-linkfix-work/validation/gcc-debug/nxt_tests
+1: Working Directory: /mnt/data/nxt-linkfix-work/validation/gcc-debug
+1: Test timeout computed to be: 10000000
+1: PASS level progression, caps, bounded combat and deterministic RNG
+1: PASS binary-angle wrapping at positive and negative half-turn
+1: PASS scene safety and defensive settings
+1: PASS ground, water, lethal floor, exit and ceiling rejection
+1: PASS bounded field navigation, connectivity, routing and distributed spawns
+1: PASS safe interior population, live retirement and room cleanup
+1: PASS all five bosses, separate reinforcement budget and boss departure
+1: PASS combat damage, friendly fire, XP credit and exactly-once rewards
+1: PASS regen combat delay, invulnerability and pause freeze
+1: PASS 20 percent berserker distribution and live scaling after combat
+1: PASS native collision proxy, source lifetime and scaling toggle
+1: PASS native resurrection and protected story-arena isolation
+1: PASS Mender casting and distinct world-boss warning abilities
+1: PASS scene actor budget uses category counts beyond the legacy byte counter
+1: PASS AI autonomous combat and bounded crowd stress
+1: PASS 15 groups, 520216 assertions
+1/2 Test #1: nxt_headless .....................   Passed    1.77 sec
+test 2
+    Start 2: nxt_actor_linkage
+
+2: Test command: /mnt/data/nxt-linkfix-work/validation/gcc-debug/nxt_actor_link_tests
+2: Working Directory: /mnt/data/nxt-linkfix-work/validation/gcc-debug
+2: Test timeout computed to be: 10000000
+2: PASS actual NxtActors.cpp linked against C-linkage engine fixtures
+2: PASS 9 draw cases; child/adult, enemy, 5 boss telegraphs, allocation failure
+2: PASS 15 balanced interpolation scopes
+2/2 Test #2: nxt_actor_linkage ................   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   1.78 sec
+
+
+FINAL GCC-RELEASE TEST OUTPUT
+Internal ctest changing into directory: /mnt/data/nxt-linkfix-work/validation/gcc-release
+UpdateCTestConfiguration  from :/mnt/data/nxt-linkfix-work/validation/gcc-release/DartConfiguration.tcl
+UpdateCTestConfiguration  from :/mnt/data/nxt-linkfix-work/validation/gcc-release/DartConfiguration.tcl
+Test project /mnt/data/nxt-linkfix-work/validation/gcc-release
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 1
+    Start 1: nxt_headless
+
+1: Test command: /mnt/data/nxt-linkfix-work/validation/gcc-release/nxt_tests
+1: Working Directory: /mnt/data/nxt-linkfix-work/validation/gcc-release
+1: Test timeout computed to be: 10000000
+1: PASS level progression, caps, bounded combat and deterministic RNG
+1: PASS binary-angle wrapping at positive and negative half-turn
+1: PASS scene safety and defensive settings
+1: PASS ground, water, lethal floor, exit and ceiling rejection
+1: PASS bounded field navigation, connectivity, routing and distributed spawns
+1: PASS safe interior population, live retirement and room cleanup
+1: PASS all five bosses, separate reinforcement budget and boss departure
+1: PASS combat damage, friendly fire, XP credit and exactly-once rewards
+1: PASS regen combat delay, invulnerability and pause freeze
+1: PASS 20 percent berserker distribution and live scaling after combat
+1: PASS native collision proxy, source lifetime and scaling toggle
+1: PASS native resurrection and protected story-arena isolation
+1: PASS Mender casting and distinct world-boss warning abilities
+1: PASS scene actor budget uses category counts beyond the legacy byte counter
+1: PASS AI autonomous combat and bounded crowd stress
+1: PASS 15 groups, 520216 assertions
+1/2 Test #1: nxt_headless .....................   Passed    0.11 sec
+test 2
+    Start 2: nxt_actor_linkage
+
+2: Test command: /mnt/data/nxt-linkfix-work/validation/gcc-release/nxt_actor_link_tests
+2: Working Directory: /mnt/data/nxt-linkfix-work/validation/gcc-release
+2: Test timeout computed to be: 10000000
+2: PASS actual NxtActors.cpp linked against C-linkage engine fixtures
+2: PASS 9 draw cases; child/adult, enemy, 5 boss telegraphs, allocation failure
+2: PASS 15 balanced interpolation scopes
+2/2 Test #2: nxt_actor_linkage ................   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   0.12 sec
+
+
+FINAL CLANG-DEBUG TEST OUTPUT
+Internal ctest changing into directory: /mnt/data/nxt-linkfix-work/validation/clang-debug
+UpdateCTestConfiguration  from :/mnt/data/nxt-linkfix-work/validation/clang-debug/DartConfiguration.tcl
+UpdateCTestConfiguration  from :/mnt/data/nxt-linkfix-work/validation/clang-debug/DartConfiguration.tcl
+Test project /mnt/data/nxt-linkfix-work/validation/clang-debug
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 1
+    Start 1: nxt_headless
+
+1: Test command: /mnt/data/nxt-linkfix-work/validation/clang-debug/nxt_tests
+1: Working Directory: /mnt/data/nxt-linkfix-work/validation/clang-debug
+1: Test timeout computed to be: 10000000
+1: PASS level progression, caps, bounded combat and deterministic RNG
+1: PASS binary-angle wrapping at positive and negative half-turn
+1: PASS scene safety and defensive settings
+1: PASS ground, water, lethal floor, exit and ceiling rejection
+1: PASS bounded field navigation, connectivity, routing and distributed spawns
+1: PASS safe interior population, live retirement and room cleanup
+1: PASS all five bosses, separate reinforcement budget and boss departure
+1: PASS combat damage, friendly fire, XP credit and exactly-once rewards
+1: PASS regen combat delay, invulnerability and pause freeze
+1: PASS 20 percent berserker distribution and live scaling after combat
+1: PASS native collision proxy, source lifetime and scaling toggle
+1: PASS native resurrection and protected story-arena isolation
+1: PASS Mender casting and distinct world-boss warning abilities
+1: PASS scene actor budget uses category counts beyond the legacy byte counter
+1: PASS AI autonomous combat and bounded crowd stress
+1: PASS 15 groups, 520216 assertions
+1/2 Test #1: nxt_headless .....................   Passed    1.74 sec
+test 2
+    Start 2: nxt_actor_linkage
+
+2: Test command: /mnt/data/nxt-linkfix-work/validation/clang-debug/nxt_actor_link_tests
+2: Working Directory: /mnt/data/nxt-linkfix-work/validation/clang-debug
+2: Test timeout computed to be: 10000000
+2: PASS actual NxtActors.cpp linked against C-linkage engine fixtures
+2: PASS 9 draw cases; child/adult, enemy, 5 boss telegraphs, allocation failure
+2: PASS 15 balanced interpolation scopes
+2/2 Test #2: nxt_actor_linkage ................   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   1.75 sec
+
+
+FINAL CLANG-RELEASE TEST OUTPUT
+Internal ctest changing into directory: /mnt/data/nxt-linkfix-work/validation/clang-release
+UpdateCTestConfiguration  from :/mnt/data/nxt-linkfix-work/validation/clang-release/DartConfiguration.tcl
+UpdateCTestConfiguration  from :/mnt/data/nxt-linkfix-work/validation/clang-release/DartConfiguration.tcl
+Test project /mnt/data/nxt-linkfix-work/validation/clang-release
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 1
+    Start 1: nxt_headless
+
+1: Test command: /mnt/data/nxt-linkfix-work/validation/clang-release/nxt_tests
+1: Working Directory: /mnt/data/nxt-linkfix-work/validation/clang-release
+1: Test timeout computed to be: 10000000
+1: PASS level progression, caps, bounded combat and deterministic RNG
+1: PASS binary-angle wrapping at positive and negative half-turn
+1: PASS scene safety and defensive settings
+1: PASS ground, water, lethal floor, exit and ceiling rejection
+1: PASS bounded field navigation, connectivity, routing and distributed spawns
+1: PASS safe interior population, live retirement and room cleanup
+1: PASS all five bosses, separate reinforcement budget and boss departure
+1: PASS combat damage, friendly fire, XP credit and exactly-once rewards
+1: PASS regen combat delay, invulnerability and pause freeze
+1: PASS 20 percent berserker distribution and live scaling after combat
+1: PASS native collision proxy, source lifetime and scaling toggle
+1: PASS native resurrection and protected story-arena isolation
+1: PASS Mender casting and distinct world-boss warning abilities
+1: PASS scene actor budget uses category counts beyond the legacy byte counter
+1: PASS AI autonomous combat and bounded crowd stress
+1: PASS 15 groups, 520216 assertions
+1/2 Test #1: nxt_headless .....................   Passed    0.11 sec
+test 2
+    Start 2: nxt_actor_linkage
+
+2: Test command: /mnt/data/nxt-linkfix-work/validation/clang-release/nxt_actor_link_tests
+2: Working Directory: /mnt/data/nxt-linkfix-work/validation/clang-release
+2: Test timeout computed to be: 10000000
+2: PASS actual NxtActors.cpp linked against C-linkage engine fixtures
+2: PASS 9 draw cases; child/adult, enemy, 5 boss telegraphs, allocation failure
+2: PASS 15 balanced interpolation scopes
+2/2 Test #2: nxt_actor_linkage ................   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   0.12 sec
+
+
+EXPECTED NEGATIVE CONTROL: original
+/mnt/data/nxt-linkfix-work/OcarinaOfTime-NXT/soh/soh/Enhancements/NxtRpg/NxtActors.cpp:219:(.text+0x8a81): undefined reference to `Nxt::FrameInterpolation_RecordOpenChild(void const*, int)'
+/usr/bin/ld: /mnt/data/nxt-linkfix-work/OcarinaOfTime-NXT/soh/soh/Enhancements/NxtRpg/NxtActors.cpp:249:(.text+0xab08): undefined reference to `Nxt::FrameInterpolation_RecordCloseChild()'
+/mnt/data/nxt-linkfix-work/OcarinaOfTime-NXT/soh/soh/Enhancements/NxtRpg/NxtActors.cpp:255:(.text+0xad9f): undefined reference to `Nxt::FrameInterpolation_RecordOpenChild(void const*, int)'
+/usr/bin/ld: /mnt/data/nxt-linkfix-work/OcarinaOfTime-NXT/soh/soh/Enhancements/NxtRpg/NxtActors.cpp:269:(.text+0xc36c): undefined reference to `Nxt::FrameInterpolation_RecordCloseChild()'
+
+
+EXPECTED NEGATIVE CONTROL: header-only
+/mnt/data/nxt-linkfix-work/OcarinaOfTime-NXT/soh/soh/Enhancements/NxtRpg/NxtActors.cpp:220:(.text+0x8a81): undefined reference to `Nxt::FrameInterpolation_RecordOpenChild(void const*, int)'
+/usr/bin/ld: /mnt/data/nxt-linkfix-work/OcarinaOfTime-NXT/soh/soh/Enhancements/NxtRpg/NxtActors.cpp:250:(.text+0xab08): undefined reference to `Nxt::FrameInterpolation_RecordCloseChild()'
+/mnt/data/nxt-linkfix-work/OcarinaOfTime-NXT/soh/soh/Enhancements/NxtRpg/NxtActors.cpp:256:(.text+0xad9f): undefined reference to `Nxt::FrameInterpolation_RecordOpenChild(void const*, int)'
+/usr/bin/ld: /mnt/data/nxt-linkfix-work/OcarinaOfTime-NXT/soh/soh/Enhancements/NxtRpg/NxtActors.cpp:270:(.text+0xc36c): undefined reference to `Nxt::FrameInterpolation_RecordCloseChild()'

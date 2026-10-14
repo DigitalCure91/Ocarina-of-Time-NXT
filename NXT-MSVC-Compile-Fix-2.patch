@@ -1,0 +1,421 @@
+--- a/soh/soh/Enhancements/NxtRpg/NxtActors.cpp
++++ b/soh/soh/Enhancements/NxtRpg/NxtActors.cpp
+@@ -2,6 +2,7 @@
+ #include "NxtNavigation.h"
+ #include "soh/ActorDB.h"
+ #include "soh/ResourceManagerHelpers.h"
++#include "soh/frame_interpolation.h"
+ #include "objects/gameplay_keep/gameplay_keep.h"
+ #include "objects/object_link_boy/object_link_boy.h"
+ #include "objects/object_link_child/object_link_child.h"
+@@ -15,6 +16,15 @@
+ #include <type_traits>
+ 
+ namespace Nxt {
++// OPEN_DISPS/CLOSE_DISPS declare these functions at block scope. Inside Nxt,
++// a global header alone does not give those declarations C linkage. Redeclare
++// the same engine API here, taking its types from the canonical header, so the
++// macros reference the existing C symbols rather than new C++-mangled symbols.
++extern "C" {
++decltype(::FrameInterpolation_RecordOpenChild) FrameInterpolation_RecordOpenChild;
++decltype(::FrameInterpolation_RecordCloseChild) FrameInterpolation_RecordCloseChild;
++}
++
+ // Actors are allocated/zeroed by the C engine. Never put C++ containers here.
+ struct NxtActor {
+     Actor actor;
+--- a/soh/soh/Enhancements/NxtRpg/NxtCombat.cpp
++++ b/soh/soh/Enhancements/NxtRpg/NxtCombat.cpp
+@@ -84,7 +84,7 @@
+     dx/=directionLength;dz/=directionLength;
+     float travel=(std::min)(speed,distance);
+     Vec3f next{u.actor->world.pos.x+dx*travel,u.actor->world.pos.y,u.actor->world.pos.z+dz*travel};
+-    int16_t yaw=static_cast<int16_t>(std::atan2(dx,dz)*32768.0f/3.14159265f);
++    int16_t yaw=DirectionYaw(dx,dz);
+     Math_SmoothStepToS(&u.actor->shape.rot.y,yaw,3,0x1800,0x80);
+     u.actor->world.rot.y=u.actor->shape.rot.y;
+     if(navigation.Move(play,u.actor,next)){u.speed=travel;u.stuckTimer=0;return;}
+@@ -106,7 +106,7 @@
+     }
+ }
+ static void Face(Unit& u,const Vec3f& target){
+-    int16_t yaw=static_cast<int16_t>(std::atan2(target.x-u.actor->world.pos.x,target.z-u.actor->world.pos.z)*32768.0f/3.14159265f);
++    int16_t yaw=DirectionYaw(target.x-u.actor->world.pos.x,target.z-u.actor->world.pos.z);
+     Math_SmoothStepToS(&u.actor->shape.rot.y,yaw,2,0x2000,0x100);
+     u.actor->world.rot.y=u.actor->shape.rot.y;
+ }
+@@ -129,8 +129,8 @@
+ static bool InAbility(const Unit& boss,const Vec3f& pos){
+     if(DistanceXZ(pos,boss.castOrigin)>boss.castRadius||std::fabs(pos.y-boss.castOrigin.y)>170)return false;
+     if(boss.bossIndex==1){
+-        float angle=std::atan2(pos.x-boss.actor->world.pos.x,pos.z-boss.actor->world.pos.z);
+-        int16_t difference=static_cast<int16_t>(static_cast<int16_t>(angle*32768.0f/3.14159265f)-boss.actor->shape.rot.y);
++        int16_t angle=DirectionYaw(pos.x-boss.actor->world.pos.x,pos.z-boss.actor->world.pos.z);
++        int16_t difference=static_cast<int16_t>(angle-boss.actor->shape.rot.y);
+         return std::abs(static_cast<int>(difference))<0x3800;
+     }
+     return true;
+@@ -200,7 +200,7 @@
+     if(u.bossIndex>=0&&u.target&&u.abilityTimer==0){
+         u.action=Action::Cast;u.castDuration=u.enraged?32:46;u.actionTimer=u.castDuration;
+         u.castOrigin=u.bossIndex==4?u.target->world.pos:u.actor->world.pos;
+-        u.castRadius=u.bossIndex==3?570:u.bossIndex==4?330:440;
++        u.castRadius=u.bossIndex==3?570.0f:u.bossIndex==4?330.0f:440.0f;
+         u.animation=-1;u.animFrame=0;u.speed=0;return;
+     }
+     if(u.bot&&u.role==Role::Mender&&u.abilityTimer==0){
+--- a/soh/soh/Enhancements/NxtRpg/NxtNavigation.cpp
++++ b/soh/soh/Enhancements/NxtRpg/NxtNavigation.cpp
+@@ -54,7 +54,7 @@
+     const CollisionHeader* header = play->colCtx.colHeader;
+     if (!header || !header->vtxList || !header->polyList) { built=true; return; }
+     uint32_t seed = 0x27D4EB2DU ^ (static_cast<uint32_t>(play->sceneNum)<<8) ^ (play->roomCtx.curRoom.num+1);
+-    const float span = (std::max)(header->maxBounds.x-header->minBounds.x, header->maxBounds.z-header->minBounds.z);
++    const float span = static_cast<float>((std::max)(header->maxBounds.x-header->minBounds.x, header->maxBounds.z-header->minBounds.z));
+     edgeRange = Clamp(span / 17.0f, 200.0f, 1600.0f);
+     // Stratified reservoir sampling is independent of polygon ordering and bounds the build work.
+     size_t seen = 0;
+@@ -162,7 +162,7 @@
+     std::vector<int> previous(nodes.size(),-1);
+     using Entry=std::pair<float,int>;
+     std::priority_queue<Entry,std::vector<Entry>,std::greater<Entry>> open;
+-    cost[start]=0;open.emplace(0,start);
++    cost[start]=0.0f;open.emplace(0.0f,start);
+     while(!open.empty()) {
+         auto [distance,index]=open.top();open.pop();
+         if(distance>cost[index]+0.01f)continue;
+--- a/soh/soh/Enhancements/NxtRpg/NxtWorld.cpp
++++ b/soh/soh/Enhancements/NxtRpg/NxtWorld.cpp
+@@ -239,8 +239,8 @@
+ void DamagePlayer(PlayState* play,Unit& source,float power){
+     Player* player=GET_PLAYER(play);
+     if(!Running(play)||!play->damagePlayer||player->invincibilityTimer!=0||source.hp<=0)return;
+-    float yaw=std::atan2(source.actor->world.pos.x-player->actor.world.pos.x,source.actor->world.pos.z-player->actor.world.pos.z);
+-    int16_t delta=static_cast<int16_t>(static_cast<int16_t>(yaw*32768.0f/3.14159265f)-player->actor.shape.rot.y);
++    int16_t yaw=DirectionYaw(source.actor->world.pos.x-player->actor.world.pos.x,source.actor->world.pos.z-player->actor.world.pos.z);
++    int16_t delta=static_cast<int16_t>(yaw-player->actor.shape.rot.y);
+     if((player->stateFlags1&PLAYER_STATE1_SHIELDING)&&std::abs(static_cast<int>(delta))<0x3000)power*=0.20f;
+     if(Random01(source.seed)<DodgeChance(CurrentPlayerStats(),source.stats)){
+         AddText(player->actor.world.pos,"EVADE",0xFFE1DCA0);lastHurt=frame;return;
+@@ -268,7 +268,7 @@
+         case ACTOR_EN_WF:u.name="Wolfos";break;case ACTOR_EN_RD:u.name="ReDead";break;
+         case ACTOR_EN_TITE:u.name="Tektite";break;case ACTOR_EN_FIREFLY:u.name="Keese";break;
+         case ACTOR_EN_DEKUBABA:u.name="Deku Baba";break;default:break;}
+-    u.hp=u.stats.maxHp;Rescale(u);units.emplace(a,std::move(u));
++    u.hp=static_cast<float>(u.stats.maxHp);Rescale(u);units.emplace(a,std::move(u));
+ }
+ static void ClearWorld(){
+     tearingDown=true;
+@@ -279,7 +279,11 @@
+     tearingDown=false;regenBank=0;sceneAge=0;
+ }
+ static bool Spawn(PlayState* play,bool bot,Vec3f point,int params){
+-    if(units.size()>=MaxPopulation||play->actorCtx.total>ACTOR_NUMBER_MAX-80)return false;
++    if(units.size()>=MaxPopulation)return false;
++    // The legacy total field is only u8; category lengths retain the full scene count.
++    int actorCount=0;
++    for(const auto& list:play->actorCtx.actorLists)actorCount+=list.length;
++    if(actorCount>=ACTOR_NUMBER_MAX-80)return false;
+     const int id=bot?botActorId:enemyActorId;
+     return Actor_Spawn(&play->actorCtx,play,id,point.x,point.y,point.z,0,
+                        static_cast<int16_t>(NextRandom(worldSeed)),0,static_cast<int16_t>(params))!=nullptr;
+--- a/soh/soh/Enhancements/NxtRpg/NxtRules.h
++++ b/soh/soh/Enhancements/NxtRpg/NxtRules.h
+@@ -13,6 +13,16 @@
+ 
+ template <typename T> constexpr T Clamp(T value, T lo, T hi) {
+     return (std::min)(hi, (std::max)(lo, value));
++}
++// atan2 can produce +pi: its binary angle is +32768, which cannot be
++// converted directly from float to int16_t. Convert to a wide integer first
++// and wrap the half-turn to -32768 before narrowing (also handles signed zero).
++inline int16_t DirectionYaw(float dx, float dz) {
++    if (!std::isfinite(dx) || !std::isfinite(dz)) return 0;
++    int32_t yaw = static_cast<int32_t>(std::atan2(dx, dz) * 32768.0f / 3.14159265f);
++    if (yaw > 32767) yaw -= 65536;
++    if (yaw < -32768) yaw += 65536;
++    return static_cast<int16_t>(yaw);
+ }
+ struct Stats {
+     int level = 1;
+--- a/tests/nxt/CMakeLists.txt
++++ b/tests/nxt/CMakeLists.txt
+@@ -2,18 +2,29 @@
+ project(NxtHeadlessTests LANGUAGES CXX)
+ set(CMAKE_CXX_STANDARD 20)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
++option(NXT_SANITIZE "Run headless tests with address and undefined-behavior sanitizers" OFF)
+ get_filename_component(NXT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+ set(NXT_SRC "${NXT_ROOT}/soh/soh/Enhancements/NxtRpg")
+ add_executable(nxt_tests NxtTests.cpp "${NXT_SRC}/NxtWorld.cpp" "${NXT_SRC}/NxtNavigation.cpp" "${NXT_SRC}/NxtCombat.cpp")
+-target_include_directories(nxt_tests PRIVATE "${NXT_ROOT}" "${NXT_ROOT}/soh" "${NXT_ROOT}/soh/include" "${NXT_ROOT}/soh/assets" "${NXT_ROOT}/libultraship/include" "${NXT_ROOT}/libultraship/include/libultraship")
+-target_compile_definitions(nxt_tests PRIVATE F3DEX_GBI_2)
+-option(NXT_SANITIZE "Run headless tests with address and undefined-behavior sanitizers" OFF)
++# Keep the actor implementation in a separate translation unit: putting the
++# fixture declarations in that file could hide the linkage bug being tested.
++add_executable(nxt_actor_link_tests NxtActorLinkTests.cpp "${NXT_SRC}/NxtActors.cpp")
++foreach(NXT_TARGET IN ITEMS nxt_tests nxt_actor_link_tests)
++target_include_directories(${NXT_TARGET} PRIVATE "${NXT_ROOT}" "${NXT_ROOT}/soh" "${NXT_ROOT}/soh/include" "${NXT_ROOT}/soh/assets" "${NXT_ROOT}/libultraship/include" "${NXT_ROOT}/libultraship/include/libultraship")
++target_compile_definitions(${NXT_TARGET} PRIVATE F3DEX_GBI_2)
+ if(NXT_SANITIZE AND NOT MSVC)
+- target_compile_options(nxt_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+- target_link_options(nxt_tests PRIVATE -fsanitize=address,undefined)
++ target_compile_options(${NXT_TARGET} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
++ target_link_options(${NXT_TARGET} PRIVATE -fsanitize=address,undefined)
+ endif()
+ if(MSVC)
+- target_compile_options(nxt_tests PRIVATE /utf-8 /Zc:preprocessor)
++ target_compile_options(${NXT_TARGET} PRIVATE /utf-8 /Zc:preprocessor)
++endif()
++endforeach()
++if(MSVC)
++ # Match the game's actor-translation-unit checks without changing the legacy
++ # simulation fixture's existing warning policy.
++ target_compile_options(nxt_actor_link_tests PRIVATE /W3 /WX /permissive-)
+ endif()
+ enable_testing()
+ add_test(NAME nxt_headless COMMAND nxt_tests)
++add_test(NAME nxt_actor_linkage COMMAND nxt_actor_link_tests)
+--- a/tests/nxt/NxtTests.cpp
++++ b/tests/nxt/NxtTests.cpp
+@@ -115,6 +115,15 @@
+   CHECK(Damage(100,100)<Damage(100,0));CHECK(Damage(100,0,1,true)>Damage(100,0));
+   CHECK(KillXp(10,10,true,false)>KillXp(10,10,false,false));CHECK(BossHealth(PlayerStats(20),12,300,1)>1500);
+  });
++ Group("binary-angle wrapping at positive and negative half-turn",[]{
++  CHECK(DirectionYaw(0.0f,1.0f)==0);
++  CHECK(DirectionYaw(1.0f,0.0f)==16384);CHECK(DirectionYaw(-1.0f,0.0f)==-16384);
++  CHECK(DirectionYaw(0.0f,-1.0f)==-32768);CHECK(DirectionYaw(-0.0f,-1.0f)==-32768);
++  CHECK(DirectionYaw(1.0f,1.0f)==8192);CHECK(DirectionYaw(-1.0f,1.0f)==-8192);
++  CHECK(DirectionYaw(1.0f,-1.0f)==24576);CHECK(DirectionYaw(-1.0f,-1.0f)==-24576);
++  CHECK(DirectionYaw(std::numeric_limits<float>::quiet_NaN(),1.0f)==0);
++  CHECK(DirectionYaw(1.0f,std::numeric_limits<float>::infinity())==0);
++ });
+  Group("scene safety and defensive settings",[]{
+   Reset();CHECK(!CombatScene(SCENE_KAKARIKO_VILLAGE));CHECK(!CombatScene(SCENE_MARKET_DAY));CHECK(!CombatScene(SCENE_LINKS_HOUSE));
+   CHECK(CombatScene(SCENE_HYRULE_FIELD));CHECK(CombatScene(SCENE_FOREST_TEMPLE));CHECK(!SceneEnabled(SCENE_DEKU_TREE_BOSS));
+@@ -212,6 +221,22 @@
+    RemoveUnit(boss);Actor_Kill(boss);
+   }
+  });
++ Group("scene actor budget uses category counts beyond the legacy byte counter",[]{
++  Reset();Configure("BotCount",1);Configure("Enemies",0);Configure("WorldBosses",0);
++  constexpr int spawnLimit=ACTOR_NUMBER_MAX-80;
++  // Simulate unrelated scene actors. The byte total has already wrapped, but
++  // the category lengths still account for every actor and the reserved slots.
++  play->actorCtx.actorLists[ACTORCAT_BG].length=spawnLimit;
++  play->actorCtx.total=static_cast<u8>(spawnLimit);
++  Run(250,false);CHECK(navigation.Ready());CHECK(LivingCount(true)==0);
++  play->actorCtx.actorLists[ACTORCAT_BG].length=spawnLimit+1;
++  play->actorCtx.total=static_cast<u8>(spawnLimit+1);
++  Run(6,false);CHECK(LivingCount(true)==0);
++  // One available slot permits the requested adventurer again.
++  play->actorCtx.actorLists[ACTORCAT_BG].length=spawnLimit-1;
++  play->actorCtx.total=static_cast<u8>(spawnLimit-1);
++  Run(6,false);CHECK(LivingCount(true)==1);
++ });
+  Group("AI autonomous combat and bounded crowd stress",[]{
+   Reset();Configure("WorldBosses",0);Configure("BotCount",30);Configure("EnemyRatio",2);player->invincibilityTimer=-1;Run(330,false);
+   CHECK(LivingCount(true)==30);CHECK(LivingCount(false)==60);
+--- /dev/null
++++ b/tests/nxt/NxtActorLinkTests.cpp
+@@ -0,0 +1,199 @@
++// Link the actual NxtActors.cpp in a SEPARATE translation unit. Engine APIs below
++// are test fixtures using the real declarations, never production replacements.
++// This detects C/C++ linkage mismatches that object-only compilation cannot catch.
++// No GPU, ROM assets, interpolation algorithm or real scene is exercised here.
++#include "soh/Enhancements/NxtRpg/NxtWorld.h"
++#include "soh/Enhancements/NxtRpg/NxtNavigation.h"
++#include "soh/ActorDB.h"
++#include "soh/ResourceManagerHelpers.h"
++#include "soh/frame_interpolation.h"
++#include <array>
++#include <cstdlib>
++#include <iostream>
++#include <memory>
++#include <stdexcept>
++
++namespace Fixture {
++std::array<ActorDB::Entry, 2> entries;
++int registered = 0, opens = 0, closes = 0, depth = 0;
++int skeletonDraws = 0, linkDraws = 0, graphOpens = 0, graphCloses = 0;
++int matrixDepth = 0;
++bool failAllocation = false;
++Nxt::Unit unit;
++std::array<Vtx, 160> vertices{};
++std::array<void*, 70> limbs{};
++FlexSkeletonHeader skeleton{};
++AnimationHeader enemyAnimation{};
++LinkAnimationHeader linkAnimation{};
++std::array<s16, (PLAYER_LIMB_MAX * 3 + 1) * 2> linkFrames{};
++Mtx matrix{};
++void Require(bool condition, const char* message) {
++    if (!condition) throw std::runtime_error(message);
++}
++}
++
++ActorDB* ActorDB::Instance = nullptr;
++ActorDB::ActorDB() = default;
++ActorDB::Entry::Entry() : entry{} {}
++ActorDB::Entry& ActorDB::AddEntry(const ActorDBInit& init) {
++    Fixture::Require(Fixture::registered < 2, "Unexpected actor registration");
++    auto& result = Fixture::entries[static_cast<size_t>(Fixture::registered)];
++    result.entry.id = 700 + Fixture::registered++;
++    result.entry.instanceSize = init.instanceSize;
++    result.entry.init = init.init;
++    result.entry.destroy = init.destroy;
++    result.entry.update = init.update;
++    result.entry.draw = init.draw;
++    return result;
++}
++
++namespace Nxt {
++int botActorId = -1, enemyActorId = -1, frame = 0;
++Navigation navigation;
++Unit* Find(Actor* actor) { return actor && Fixture::unit.actor == actor ? &Fixture::unit : nullptr; }
++void AddUnit(Actor* actor, bool bot) {
++    Fixture::unit = Unit{};
++    Fixture::unit.actor = actor;
++    Fixture::unit.bot = bot;
++}
++void RemoveUnit(Actor*) { Fixture::unit = Unit{}; }
++bool Running(PlayState*) { return false; }
++bool Alive(const Unit& unit) { return unit.hp > 0.0f; }
++void UpdateUnit(Unit&, PlayState*) {}
++void HitUnit(Unit&, Actor*, int, float) {}
++Actor* RecordedHitSource(Actor*) { return nullptr; }
++int RecordedTouchDamage(Actor*) { return 0; }
++float DistanceXZ(const Vec3f& a, const Vec3f& b) { return std::hypot(a.x - b.x, a.z - b.z); }
++bool Navigation::Clear(PlayState*, const Vec3f&, const Vec3f&, float) const { return true; }
++}
++
++extern "C" {
++SaveContext gSaveContext{};
++Gfx D_80116280[8]{};
++void FrameInterpolation_RecordOpenChild(const void*, int) { ++Fixture::opens; ++Fixture::depth; }
++void FrameInterpolation_RecordCloseChild(void) {
++    Fixture::Require(Fixture::depth > 0, "Unbalanced interpolation close");
++    ++Fixture::closes; --Fixture::depth;
++}
++void Graph_OpenDisps(Gfx**, GraphicsContext*, const char*, s32) { ++Fixture::graphOpens; }
++void Graph_CloseDisps(Gfx**, GraphicsContext*, const char*, s32) { ++Fixture::graphCloses; }
++void* Graph_Alloc(GraphicsContext*, size_t size) {
++    Fixture::Require(size <= sizeof(Fixture::vertices), "Unexpected vertex allocation size");
++    return Fixture::failAllocation ? nullptr : Fixture::vertices.data();
++}
++void Actor_Kill(Actor* actor) { actor->update = nullptr; }
++void Actor_SetScale(Actor* actor, f32 scale) { actor->scale = {scale, scale, scale}; }
++void ActorShape_Init(ActorShape*, f32, ActorShadowFunc, f32) {}
++void ActorShadow_DrawCircle(Actor*, Lights*, PlayState*) {}
++s32 Collider_InitCylinder(PlayState*, ColliderCylinder*) { return 1; }
++s32 Collider_DestroyCylinder(PlayState*, ColliderCylinder*) { return 1; }
++s32 Collider_SetCylinder(PlayState*, ColliderCylinder*, Actor*, ColliderCylinderInit*) { return 1; }
++void Collider_UpdateCylinder(Actor*, ColliderCylinder*) {}
++s32 CollisionCheck_SetAC(PlayState*, CollisionCheckContext*, Collider*) { return 1; }
++s32 CollisionCheck_SetAT(PlayState*, CollisionCheckContext*, Collider*) { return 1; }
++void EffectSsKiraKira_SpawnSmall(PlayState*, Vec3f*, Vec3f*, Vec3f*, Color_RGBA8*, Color_RGBA8*) {}
++AnimationHeaderCommon* ResourceMgr_LoadAnimByName(const char*) {
++    Fixture::enemyAnimation.common.frameCount = 2;
++    Fixture::linkAnimation.common.frameCount = 2;
++    Fixture::linkAnimation.segment = Fixture::linkFrames.data();
++    return Fixture::unit.bot ? &Fixture::linkAnimation.common : &Fixture::enemyAnimation.common;
++}
++SkeletonHeader* ResourceMgr_LoadSkeletonByName(const char*, SkelAnime*) {
++    Fixture::skeleton.sh.segment = Fixture::limbs.data();
++    Fixture::skeleton.sh.limbCount = static_cast<u8>(Fixture::unit.bot ? PLAYER_LIMB_MAX - 1 : 1);
++    Fixture::skeleton.dListCount = 1;
++    return &Fixture::skeleton.sh;
++}
++void ResourceMgr_UnregisterSkeleton(SkelAnime*) {}
++s16 Animation_GetLastFrame(void*) { return 1; }
++void Animation_Change(SkelAnime*, AnimationHeader*, f32, f32, f32, u8, f32) {}
++s32 SkelAnime_Update(SkelAnime*) { return 0; }
++s32 SkelAnime_Init(PlayState*, SkelAnime* skel, SkeletonHeader* header, AnimationHeader*,
++                   Vec3s* joints, Vec3s* morphs, s32 count) {
++    skel->skeleton = header->segment;
++    skel->jointTable = joints;
++    skel->morphTable = morphs;
++    skel->limbCount = static_cast<u8>(count);
++    return 1;
++}
++void SkelAnime_DrawFlexLod(PlayState*, void**, Vec3s*, s32, OverrideLimbDrawOpa,
++                          PostLimbDrawOpa, void*, s32) { ++Fixture::linkDraws; }
++void SkelAnime_DrawSkeletonOpa(PlayState*, SkelAnime*, OverrideLimbDrawOpa,
++                              PostLimbDrawOpa, void*) { ++Fixture::skeletonDraws; }
++void Gfx_SetupDL_25Opa(GraphicsContext*) {}
++void Gfx_SetupDL_25Xlu(GraphicsContext*) {}
++void gSPSegment(void*, int, uintptr_t) {}
++void gSPVertex(Gfx*, uintptr_t, int, int) {}
++f32 Math_SinS(s16 angle) { return std::sin(static_cast<float>(angle) * (3.14159265f / 32768.0f)); }
++f32 Math_CosS(s16 angle) { return std::cos(static_cast<float>(angle) * (3.14159265f / 32768.0f)); }
++void Matrix_Push(void) { ++Fixture::matrixDepth; }
++void Matrix_Pop(void) { --Fixture::matrixDepth; }
++void Matrix_Translate(f32, f32, f32, u8) {}
++Mtx* Matrix_NewMtx(GraphicsContext*, char*, s32) { return &Fixture::matrix; }
++}
++
++int main() {
++    try {
++        ActorDB registry;
++        ActorDB::Instance = &registry;
++        Nxt::InitActors();
++        Fixture::Require(Fixture::registered == 2, "Actors were not registered");
++        Fixture::Require(Nxt::botActorId == 700 && Nxt::enemyActorId == 701, "Unexpected actor ids");
++        auto play = std::make_unique<PlayState>();
++        auto graphics = std::make_unique<GraphicsContext>();
++        std::array<Gfx, 512> opa{}, xlu{};
++        play->state.gfxCtx = graphics.get();
++        auto drawCase = [&](bool bot, int boss, bool allocationFailure) {
++            const auto& entry = Fixture::entries[bot ? 0 : 1].entry;
++            Fixture::Require(entry.init && entry.destroy && entry.update && entry.draw,
++                             "Actor callbacks are incomplete");
++            std::unique_ptr<Actor, decltype(&std::free)> actor(
++                static_cast<Actor*>(std::calloc(1, entry.instanceSize)), &std::free);
++            Fixture::Require(actor != nullptr, "Actor allocation failed");
++            actor->id = static_cast<s16>(entry.id);
++            actor->update = entry.update;
++            entry.init(actor.get(), play.get());
++            Fixture::Require(actor->update != nullptr, "Actor initialization failed");
++            Fixture::unit.bossIndex = boss;
++            Fixture::unit.profile = boss < 0 ? 0 : boss;
++            Fixture::unit.action = boss < 0 ? Nxt::Action::Roam : Nxt::Action::Cast;
++            Fixture::unit.castDuration = 40;
++            Fixture::unit.actionTimer = 20;
++            Fixture::failAllocation = allocationFailure;
++            graphics->polyOpa.p = opa.data();
++            graphics->polyXlu.p = xlu.data();
++            const int before = Fixture::opens;
++            entry.draw(actor.get(), play.get());
++            Fixture::Require(Fixture::opens - before == (boss < 0 ? 1 : 2),
++                             "Draw/telegraph did not call interpolation recorders");
++            Fixture::Require(Fixture::opens == Fixture::closes && Fixture::depth == 0,
++                             "Interpolation scope leaked");
++            Fixture::Require(Fixture::matrixDepth == 0, "Matrix scope leaked");
++            entry.destroy(actor.get(), play.get());
++        };
++        gSaveContext.linkAge = LINK_AGE_CHILD;
++        drawCase(true, -1, false);
++        gSaveContext.linkAge = LINK_AGE_ADULT;
++        drawCase(true, -1, false);
++        drawCase(false, -1, false);
++        for (int boss = 0; boss < Nxt::BossCount; ++boss) drawCase(false, boss, false);
++        drawCase(false, 0, true);
++        Fixture::Require(Fixture::linkDraws == 2 && Fixture::skeletonDraws == 7,
++                         "Expected draw branches were not reached");
++#ifndef NDEBUG
++        Fixture::Require(Fixture::graphOpens == Fixture::opens && Fixture::graphCloses == Fixture::closes,
++                         "Debug display-list scopes are unbalanced");
++#else
++        Fixture::Require(Fixture::graphOpens == 0 && Fixture::graphCloses == 0,
++                         "Unexpected debug graph calls in Release");
++#endif
++        std::cout << "PASS actual NxtActors.cpp linked against C-linkage engine fixtures\n"
++                  << "PASS 9 draw cases; child/adult, enemy, 5 boss telegraphs, allocation failure\n"
++                  << "PASS " << Fixture::opens << " balanced interpolation scopes\n";
++        ActorDB::Instance = nullptr;
++        return 0;
++    } catch (const std::exception& error) {
++        std::cerr << "FAIL " << error.what() << '\n';
++        return 1;
++    }
++}

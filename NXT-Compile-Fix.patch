@@ -1,0 +1,80 @@
+--- a/soh/soh/Enhancements/NxtRpg/NxtCombat.cpp
++++ b/soh/soh/Enhancements/NxtRpg/NxtCombat.cpp
+@@ -200,7 +200,7 @@
+     if(u.bossIndex>=0&&u.target&&u.abilityTimer==0){
+         u.action=Action::Cast;u.castDuration=u.enraged?32:46;u.actionTimer=u.castDuration;
+         u.castOrigin=u.bossIndex==4?u.target->world.pos:u.actor->world.pos;
+-        u.castRadius=u.bossIndex==3?570:u.bossIndex==4?330:440;
++        u.castRadius=u.bossIndex==3?570.0f:u.bossIndex==4?330.0f:440.0f;
+         u.animation=-1;u.animFrame=0;u.speed=0;return;
+     }
+     if(u.bot&&u.role==Role::Mender&&u.abilityTimer==0){
+--- a/soh/soh/Enhancements/NxtRpg/NxtNavigation.cpp
++++ b/soh/soh/Enhancements/NxtRpg/NxtNavigation.cpp
+@@ -54,7 +54,7 @@
+     const CollisionHeader* header = play->colCtx.colHeader;
+     if (!header || !header->vtxList || !header->polyList) { built=true; return; }
+     uint32_t seed = 0x27D4EB2DU ^ (static_cast<uint32_t>(play->sceneNum)<<8) ^ (play->roomCtx.curRoom.num+1);
+-    const float span = (std::max)(header->maxBounds.x-header->minBounds.x, header->maxBounds.z-header->minBounds.z);
++    const float span = static_cast<float>((std::max)(header->maxBounds.x-header->minBounds.x, header->maxBounds.z-header->minBounds.z));
+     edgeRange = Clamp(span / 17.0f, 200.0f, 1600.0f);
+     // Stratified reservoir sampling is independent of polygon ordering and bounds the build work.
+     size_t seen = 0;
+@@ -162,7 +162,7 @@
+     std::vector<int> previous(nodes.size(),-1);
+     using Entry=std::pair<float,int>;
+     std::priority_queue<Entry,std::vector<Entry>,std::greater<Entry>> open;
+-    cost[start]=0;open.emplace(0,start);
++    cost[start]=0.0f;open.emplace(0.0f,start);
+     while(!open.empty()) {
+         auto [distance,index]=open.top();open.pop();
+         if(distance>cost[index]+0.01f)continue;
+--- a/soh/soh/Enhancements/NxtRpg/NxtWorld.cpp
++++ b/soh/soh/Enhancements/NxtRpg/NxtWorld.cpp
+@@ -268,7 +268,7 @@
+         case ACTOR_EN_WF:u.name="Wolfos";break;case ACTOR_EN_RD:u.name="ReDead";break;
+         case ACTOR_EN_TITE:u.name="Tektite";break;case ACTOR_EN_FIREFLY:u.name="Keese";break;
+         case ACTOR_EN_DEKUBABA:u.name="Deku Baba";break;default:break;}
+-    u.hp=u.stats.maxHp;Rescale(u);units.emplace(a,std::move(u));
++    u.hp=static_cast<float>(u.stats.maxHp);Rescale(u);units.emplace(a,std::move(u));
+ }
+ static void ClearWorld(){
+     tearingDown=true;
+@@ -279,7 +279,11 @@
+     tearingDown=false;regenBank=0;sceneAge=0;
+ }
+ static bool Spawn(PlayState* play,bool bot,Vec3f point,int params){
+-    if(units.size()>=MaxPopulation||play->actorCtx.total>ACTOR_NUMBER_MAX-80)return false;
++    if(units.size()>=MaxPopulation)return false;
++    // The legacy total field is only u8; category lengths retain the full scene count.
++    int actorCount=0;
++    for(const auto& list:play->actorCtx.actorLists)actorCount+=list.length;
++    if(actorCount>=ACTOR_NUMBER_MAX-80)return false;
+     const int id=bot?botActorId:enemyActorId;
+     return Actor_Spawn(&play->actorCtx,play,id,point.x,point.y,point.z,0,
+                        static_cast<int16_t>(NextRandom(worldSeed)),0,static_cast<int16_t>(params))!=nullptr;
+--- a/tests/nxt/NxtTests.cpp
++++ b/tests/nxt/NxtTests.cpp
+@@ -212,6 +212,22 @@
+    RemoveUnit(boss);Actor_Kill(boss);
+   }
+  });
++ Group("scene actor budget uses category counts beyond the legacy byte counter",[]{
++  Reset();Configure("BotCount",1);Configure("Enemies",0);Configure("WorldBosses",0);
++  constexpr int spawnLimit=ACTOR_NUMBER_MAX-80;
++  // Simulate unrelated scene actors. The byte total has already wrapped, but
++  // the category lengths still account for every actor and the reserved slots.
++  play->actorCtx.actorLists[ACTORCAT_BG].length=spawnLimit;
++  play->actorCtx.total=static_cast<u8>(spawnLimit);
++  Run(250,false);CHECK(navigation.Ready());CHECK(LivingCount(true)==0);
++  play->actorCtx.actorLists[ACTORCAT_BG].length=spawnLimit+1;
++  play->actorCtx.total=static_cast<u8>(spawnLimit+1);
++  Run(6,false);CHECK(LivingCount(true)==0);
++  // One available slot permits the requested adventurer again.
++  play->actorCtx.actorLists[ACTORCAT_BG].length=spawnLimit-1;
++  play->actorCtx.total=static_cast<u8>(spawnLimit-1);
++  Run(6,false);CHECK(LivingCount(true)==1);
++ });
+  Group("AI autonomous combat and bounded crowd stress",[]{
+   Reset();Configure("WorldBosses",0);Configure("BotCount",30);Configure("EnemyRatio",2);player->invincibilityTimer=-1;Run(330,false);
+   CHECK(LivingCount(true)==30);CHECK(LivingCount(false)==60);

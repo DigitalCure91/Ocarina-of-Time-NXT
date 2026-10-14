@@ -1,0 +1,162 @@
+{
+  "edition": "NXT RPG source 1.0",
+  "baseline": "OcarinaOfTime-NXT.rar",
+  "baseline_archive_sha256": "7c22f447e9938cbbc70fdb94c05462903d6944815c50c6766110c8014cb60829",
+  "files": [
+    {
+      "path": "Build-Nxt.ps1",
+      "baseline_sha256": null,
+      "sha256": "b6337c7c5ecb20bde4cef0994e51c5b19448cd1df6257976fea338272627839c"
+    },
+    {
+      "path": "CMakeLists.txt",
+      "baseline_sha256": "ce462baf7feb2a23d6173726550f07746bcb0b592c270949fc6f11262bf6bc9a",
+      "sha256": "f861062d817f480745bb361e123aeb595787319182f515320655f7fc227cdf8d"
+    },
+    {
+      "path": "README_NXT.md",
+      "baseline_sha256": null,
+      "sha256": "2bb0ac736e5e314fad27051c60e2f29b9481e38bbf04ce1cc242ed2c0e47d505"
+    },
+    {
+      "path": "Restore-NxtBaselineAssets.ps1",
+      "baseline_sha256": null,
+      "sha256": "b0b764bfcb5248920ffd97c3c545070f83b9142781dba5d2f5d18409721d89fd"
+    },
+    {
+      "path": "build-nxt.sh",
+      "baseline_sha256": null,
+      "sha256": "0e08907137efffba5fbae01c38f2b3225f7f76a14822add1f1ea96b4e2c4edd9"
+    },
+    {
+      "path": "docs/NXT_SETTINGS.md",
+      "baseline_sha256": null,
+      "sha256": "03cbd167cee141206b549abb4434cd70dbcd9a74c32e8af0b50290ba8b7728b2"
+    },
+    {
+      "path": "docs/NXT_VALIDATION.md",
+      "baseline_sha256": null,
+      "sha256": "e36821c4efafc6c687de3efce744bbf97577ef42ce2c966fcc2003e19a43ad40"
+    },
+    {
+      "path": "libultraship/include/fast/Fast3dGui.h",
+      "baseline_sha256": "96047476c88fefae883089850aad33cbe6dd57e08a03fdc4924b876f13f1510e",
+      "sha256": "8a904eb57ccc57e76efabe824739d2800bea20ad774ee5462ce7792176ae3f29"
+    },
+    {
+      "path": "libultraship/src/fast/Fast3dGui.cpp",
+      "baseline_sha256": "0124ac672f9da939f8c45ef7b9e6842d389ab1759f801bb4dbd0037b35b77f30",
+      "sha256": "1504b43bb6c9fe9ce45f714e4fd7cc7c15af7414f65a623567f923fe212e947d"
+    },
+    {
+      "path": "soh/include/z64collision_check.h",
+      "baseline_sha256": "4cbb3141b1df95567a658729c812eae8d2efb7eba73c2c6d1e6631ac73a1a84e",
+      "sha256": "8aeea4cb3a153f9d94d39ac4f6d4ed3fb32a6abca3e5dee355fce7be35a0cd05"
+    },
+    {
+      "path": "soh/include/z64save.h",
+      "baseline_sha256": "6dd9d31ef27c2d278a2f82057e4017502827b51446f828dd822c82bb4986c6ff",
+      "sha256": "bd3bd6e78d5f7f4dcb822ea965531da4d80818fb96106c0ade1c0c3c22bebf55"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtActors.cpp",
+      "baseline_sha256": null,
+      "sha256": "01b0c24a43d1c0c58e963878ef6c218f9a87e133c620666c8e5dc0929dc9a571"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtBridge.h",
+      "baseline_sha256": null,
+      "sha256": "277111cd99192b51748d33eb73cf1700ef71a97efb24e0cb45b968088bb783d4"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtCombat.cpp",
+      "baseline_sha256": null,
+      "sha256": "84efab14aad1172a0988c966983860a5926db9c95740b0816af14408e7ea3fc2"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtConfig.h",
+      "baseline_sha256": null,
+      "sha256": "161d2a6b648a6c6d992c0fcd6b35ccb230b42e3a0761c188bba3392694cfd5c9"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtGui.cpp",
+      "baseline_sha256": null,
+      "sha256": "4a47019955df6708ac2d30527d2647baa137743cc7fbbd7ffc5596f54871aeb2"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtGui.h",
+      "baseline_sha256": null,
+      "sha256": "9e4a6796ff2bc15e2a8e53e527f7017874e0577866bdb1de59d8a7a3cab3a188"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtIntegration.cpp",
+      "baseline_sha256": null,
+      "sha256": "cfa1e3c3db8cdbdb124e5e3045f13d97cf9cda6f81b074de86442f1327884438"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtNavigation.cpp",
+      "baseline_sha256": null,
+      "sha256": "4807095cabe3f11f16439f36cabda9e17861d3f61b1c482477051f510ad29deb"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtNavigation.h",
+      "baseline_sha256": null,
+      "sha256": "db9116a8b165181539e3ab666b09457915dda969ea964cfa8f2bf59fd55c28cb"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtRules.h",
+      "baseline_sha256": null,
+      "sha256": "d5b573b6da8a8257e06e04df72ce0b09fc3ea8f06cd98020d54b48fd36031b66"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtWorld.cpp",
+      "baseline_sha256": null,
+      "sha256": "15343066238dcfdc6fd46f409ddce1b06ee1084dc0f19c13bf30df0d46f1f35a"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtWorld.h",
+      "baseline_sha256": null,
+      "sha256": "4a34be854e87fe3ff8eba1686efcf93829c54e05975dce2ab69ac97ec91bfefe"
+    },
+    {
+      "path": "soh/soh/OTRGlobals.cpp",
+      "baseline_sha256": "a4ec2a1c4ab5b0285cd92dca6f8b2efd15754cfc131b53fa2e18646822d60fe4",
+      "sha256": "ca0f30150e9277254cc3134bcfc7199cbd1dfe871df61a1ab6ab6edca40ee2b0"
+    },
+    {
+      "path": "soh/soh/SohGui/SohMenuEnhancements.cpp",
+      "baseline_sha256": "9d77c74ebbb522d284fb67230837ba43c66f224dda039613d4a807b0ee6dacc2",
+      "sha256": "628517941fa2f9f54433d5f2d5250481b0e7f9a8e0bba87ebf03f62eafe9dbfc"
+    },
+    {
+      "path": "soh/src/code/z_actor.c",
+      "baseline_sha256": "d7d1386d8575622241d64c9b137466daa1bf13c85ac62de089f36e934b75bbc3",
+      "sha256": "6aa0dc0d1a8544577ada39ae1be6a9f8ad0948a97171a05801a6c0141bb6b36d"
+    },
+    {
+      "path": "soh/src/code/z_collision_check.c",
+      "baseline_sha256": "7aab09a0a2166fdbd2ebae2feda56b31509acf4a172683ac98d9b83555ef6dda",
+      "sha256": "68b717cb4473bd9b77fc901a83c371f5a61f43cfc8a00e242bc66d60b6da63be"
+    },
+    {
+      "path": "soh/src/code/z_parameter.c",
+      "baseline_sha256": "378671210bef0248ce8ca338a903c13f163a6fbbd89f57876fe60735dd9f592b",
+      "sha256": "516fe53507e21481291c552feb0c0156989b5fa12da63437c74590af0f8884b5"
+    },
+    {
+      "path": "tests/nxt/CMakeLists.txt",
+      "baseline_sha256": null,
+      "sha256": "d1ee2c51ff3bf0c3bd0052710d66f6b03ad52429490223d0ffe97143f38ea159"
+    },
+    {
+      "path": "tests/nxt/NxtTests.cpp",
+      "baseline_sha256": null,
+      "sha256": "4cf73708fed507c61b70a47df1ecbc1bf5a1d1bbbcf04528d74b5b9ae09af7f6"
+    },
+    {
+      "path": "tools/nxt/check_core_syntax.py",
+      "baseline_sha256": null,
+      "sha256": "cf6d06029b16016da9a9a9e9f1899454f32dbf557f0e15587ee5777cbf53f9ce"
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "package": "NXT-MSVC-Compile-Fix-2",
+  "cumulative_from": "initial NXT RPG source snapshot",
+  "files": [
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtActors.cpp",
+      "sha256": "52ef9c202b47bbc715176a9acf986472a8a166c39cfaf050d3959578e8b35e24",
+      "initial_sha256": "01b0c24a43d1c0c58e963878ef6c218f9a87e133c620666c8e5dc0929dc9a571",
+      "fix1_sha256": "01b0c24a43d1c0c58e963878ef6c218f9a87e133c620666c8e5dc0929dc9a571"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtCombat.cpp",
+      "sha256": "fc09665cf63b3312d3ae0d2afcaef54ea95527a2dc5c5364847ace2f232786dc",
+      "initial_sha256": "84efab14aad1172a0988c966983860a5926db9c95740b0816af14408e7ea3fc2",
+      "fix1_sha256": "6fa12a5c83777b8637e36a6ce4776bb7cddff3e6ec1c0afb7322ca043dcaf3b2"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtNavigation.cpp",
+      "sha256": "08ddaddc2702a0b7fcdb185446a542271eab5f1126115d122a6fcafb0ec706d4",
+      "initial_sha256": "4807095cabe3f11f16439f36cabda9e17861d3f61b1c482477051f510ad29deb",
+      "fix1_sha256": "08ddaddc2702a0b7fcdb185446a542271eab5f1126115d122a6fcafb0ec706d4"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtWorld.cpp",
+      "sha256": "a2e47554d1e5df11991f717c176164313d70914399a9af0448a0816fd4102820",
+      "initial_sha256": "15343066238dcfdc6fd46f409ddce1b06ee1084dc0f19c13bf30df0d46f1f35a",
+      "fix1_sha256": "2cb1cc156244114f982a2ca216f748891f25b9998fa7f72c5822b42ac28c4355"
+    },
+    {
+      "path": "soh/soh/Enhancements/NxtRpg/NxtRules.h",
+      "sha256": "984334151a3cc26ddf251c92b5276e3c1087f5b033f36932b5e8f1a4facc6732",
+      "initial_sha256": "d5b573b6da8a8257e06e04df72ce0b09fc3ea8f06cd98020d54b48fd36031b66",
+      "fix1_sha256": "d5b573b6da8a8257e06e04df72ce0b09fc3ea8f06cd98020d54b48fd36031b66"
+    },
+    {
+      "path": "tests/nxt/CMakeLists.txt",
+      "sha256": "24434a2e0f15ec31ae927728b960596dd0cea73deba6273203307e843ee4ccba",
+      "initial_sha256": "d1ee2c51ff3bf0c3bd0052710d66f6b03ad52429490223d0ffe97143f38ea159",
+      "fix1_sha256": "d1ee2c51ff3bf0c3bd0052710d66f6b03ad52429490223d0ffe97143f38ea159"
+    },
+    {
+      "path": "tests/nxt/NxtTests.cpp",
+      "sha256": "ebc03b1e1e339e3e7eefdfbf7342c5632029bc5b31b043ff8708950b19d7a936",
+      "initial_sha256": "4cf73708fed507c61b70a47df1ecbc1bf5a1d1bbbcf04528d74b5b9ae09af7f6",
+      "fix1_sha256": "5ddd22a2f33b7cf881c2fab27d2f98f65b298a9d0e50b2b2b21416c93658cdf9"
+    },
+    {
+      "path": "tests/nxt/NxtActorLinkTests.cpp",
+      "sha256": "09038c8006dbb2770f6e6d7b95704a5a814f1226ca339b46ef9f10ca5e33b6b1",
+      "initial_sha256": null,
+      "fix1_sha256": null
+    }
+  ]
+}

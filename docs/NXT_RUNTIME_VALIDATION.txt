@@ -1,0 +1,105 @@
+Ocarina of Time NXT 1.0.1 runtime repair — validation
+11 October 2026
+
+RESULT
+All four standalone targets compiled, linked and passed with GCC/G++ 13.3.0
+on Ubuntu 24.04 in both configurations:
+  • Sanitized: -g -O1 -Werror, AddressSanitizer + UndefinedBehaviorSanitizer.
+  • Release: -O2 -DNDEBUG -Werror.
+The legacy engine C translation unit uses the game's warning-suppression policy.
+The C++ fixtures and NXT implementation are checked with -Werror.
+
+FINAL TARGETS
+1. Simulation: real NxtWorld.cpp, NxtNavigation.cpp and NxtCombat.cpp against
+   repository engine headers and controlled collision/world fixtures.
+   PASS 28 groups / 522165 assertions. Most assertions are arithmetic loops,
+   not separate gameplay scenarios. Eight added navigation/recoil groups cover
+   obstructed route attachment, doorway progress, pit detours, wall corrections,
+   one-way drops, successive roaming stops, stable target selection and safe
+   bot knockback. Five added damage groups cover independent recipients,
+   destroyed projectile lifetime, retired bot attribution, hostile arrows,
+   lethal floors and unchanged real-Link movement/health state.
+2. Actor rendering integration: real NxtActors.cpp linked separately against
+   engine/resource boundary fixtures using repository declarations.
+   PASS 9 draw cases, 16 invalid-resource cleanup cases, 15 balanced interpolation
+   scopes. All incoming render segments are poisoned with the exact message
+   texture resource string; per-model executable segment setup is checked.
+   Child/adult bots, ordinary enemies, all five boss profiles, flexible/rigid
+   skeleton initialization and telegraph allocation failure are exercised.
+3. Native collision integration: the entire real z_collision_check.c is compiled
+   as C and linked to NxtCollisionTests.cpp. PASS 75 assertions. Bot-only hits
+   do not publish player-only AT_HIT/TOUCH_HIT/AT_BOUNCED callbacks. Real Link
+   and ordinary native targets retain native feedback. Both Link/bot collision
+   orders preserve legitimate Link pointers and AC hits. The actual QuadVsCyl
+   and nearest-hit arbitration run with controlled intersection geometry.
+4. Game overlay: the actual Fast3dGui::DrawGame body and NxtGui projection,
+   scale and panel-bounds helpers are extracted into a generated C++ fixture.
+   PASS 81 rendering-path checks + 138 GUI math checks. Includes direct rendering
+   (framebuffer texture zero), texture rendering, current resize bounds, native
+   resolution, aspect correction, integer scaling, zero viewport, non-finite
+   inputs, native-size readability, and widescreen projection.
+
+NEGATIVE CONTROLS (EXPECTED FAILURES)
+• Unchanged baseline z_collision_check.c with new collision fixture:
+    FAIL Bot hit leaked native player reaction flags
+• Unchanged baseline Fast3dGui::DrawGame with new overlay fixture:
+    FAIL overlay runs once regardless of framebuffer texture
+• Updated actor source with only enemy hilite setup removed:
+    FAIL Enemy would execute textbox texture as hilite commands
+• Updated actor source with only bot culling-segment setup removed:
+    FAIL Link inherited a non-command culling segment
+• Baseline NxtCombat.cpp compiled with current headers/navigation/tests:
+    FAIL bot.pathCursor>=cursor (doorway progress regression)
+These controls were built/run from scratch copies; the final source retains
+all fixes. The original baseline suites passed before this repair, demonstrating
+why those older fixtures alone could not detect the reported runtime defects.
+
+SANITIZER SETTINGS AND LIMITS
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+LeakSanitizer could not inspect /proc task state in this execution environment;
+its initial detect_leaks=1 run stopped with a runtime permission error. Leak
+detection was then disabled; no leak-check pass is claimed.
+For z_collision_check.c only, GCC --param=asan-globals=0 disables global ASan
+registration so unused engine function-pointer tables can be discarded by the
+linker. Heap/stack ASan and UBSan remain enabled. Global-buffer instrumentation
+for that C file is not covered. Other test targets use ordinary ASan/UBSan.
+
+BUILD AND IN-GAME LIMITATIONS
+No full game build, CMake/CTest invocation, Visual Studio/MSVC build, Windows
+executable launch, GPU/ImGui pixel rendering, ROM/resource loading or real map
+playthrough was possible here. This environment has GCC, but lacks CMake,
+Windows tooling and the game's downloaded graphics dependencies/assets.
+The CMake targets and Windows runner were source-reviewed; they were not run.
+Rendering tests check command setup and boundary calls, not displayed pixels.
+Collision geometry/actor scenes are controlled fixtures, not Deku Tree assets.
+The actual Windows build and the in-game checklist in NXT_RUNTIME_REPAIR.md
+remain necessary before calling this a fully playtested game release.
+
+WINDOWS REPRODUCTION (from source root; requires VS 2022/v143 and CMake)
+powershell -ExecutionPolicy Bypass -File .\Build-Nxt.ps1 -TestsOnly -Configuration Debug
+powershell -ExecutionPolicy Bypass -File .\Build-Nxt.ps1 -TestsOnly -Configuration Release
+Python 3 is optional for the first three targets; install it to include the
+fourth overlay target. CMake prints an explicit message if Python is missing.
+The generated overlay C++ is built by Visual Studio, avoiding direct cl.exe
+invocation outside its configured environment.
+
+DIRECT GCC REPRODUCTION (Bash, from source root; no CMake required)
+mkdir -p build/nxt-direct
+out=build/nxt-direct
+inc=(-I. -Isoh -Isoh/include -Isoh/src -Isoh/assets -Ilibultraship/include -Ilibultraship/include/libultraship)
+flags=(-g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer)
+nxt=soh/soh/Enhancements/NxtRpg
+export ASAN_OPTIONS=detect_leaks=0:halt_on_error=1
+export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+g++ -std=c++20 -Werror -DF3DEX_GBI_2 "${inc[@]}" "${flags[@]}" tests/nxt/NxtTests.cpp "$nxt/NxtWorld.cpp" "$nxt/NxtNavigation.cpp" "$nxt/NxtCombat.cpp" -o "$out/nxt_tests"
+"$out/nxt_tests"
+g++ -std=c++20 -Werror -DF3DEX_GBI_2 "${inc[@]}" "${flags[@]}" tests/nxt/NxtActorLinkTests.cpp "$nxt/NxtActors.cpp" -o "$out/nxt_actor_link_tests"
+"$out/nxt_actor_link_tests"
+gcc -std=gnu11 -w -DF3DEX_GBI_2 -DCVAR_PREFIX_ENHANCEMENT='"gEnhancements"' -DLOG_LEVEL_GAME_PRINTS=6 "${inc[@]}" "${flags[@]}" -ffunction-sections -fdata-sections --param=asan-globals=0 -c soh/src/code/z_collision_check.c -o "$out/z_collision_check.o"
+g++ -std=c++20 -Werror -DF3DEX_GBI_2 "${inc[@]}" "${flags[@]}" -ffunction-sections -fdata-sections tests/nxt/NxtCollisionTests.cpp "$out/z_collision_check.o" -Wl,--gc-sections -o "$out/nxt_collision_tests"
+"$out/nxt_collision_tests"
+python3 tests/nxt/GameOverlayTests.py --emit-source "$out/NxtGameOverlayGenerated.cpp"
+g++ -std=c++20 -Wall -Wextra -Werror -Wno-unused-but-set-variable "${flags[@]}" "$out/NxtGameOverlayGenerated.cpp" -o "$out/nxt_game_overlay_tests"
+"$out/nxt_game_overlay_tests"
+For the Release run, use flags=(-O2 -DNDEBUG) and omit --param=asan-globals=0.

@@ -1,0 +1,18 @@
+{
+  "soh/soh/Enhancements/NxtRpg/NxtCombat.cpp": {
+    "before_sha256": "84efab14aad1172a0988c966983860a5926db9c95740b0816af14408e7ea3fc2",
+    "after_sha256": "6fa12a5c83777b8637e36a6ce4776bb7cddff3e6ec1c0afb7322ca043dcaf3b2"
+  },
+  "soh/soh/Enhancements/NxtRpg/NxtNavigation.cpp": {
+    "before_sha256": "4807095cabe3f11f16439f36cabda9e17861d3f61b1c482477051f510ad29deb",
+    "after_sha256": "08ddaddc2702a0b7fcdb185446a542271eab5f1126115d122a6fcafb0ec706d4"
+  },
+  "soh/soh/Enhancements/NxtRpg/NxtWorld.cpp": {
+    "before_sha256": "15343066238dcfdc6fd46f409ddce1b06ee1084dc0f19c13bf30df0d46f1f35a",
+    "after_sha256": "2cb1cc156244114f982a2ca216f748891f25b9998fa7f72c5822b42ac28c4355"
+  },
+  "tests/nxt/NxtTests.cpp": {
+    "before_sha256": "4cf73708fed507c61b70a47df1ecbc1bf5a1d1bbbcf04528d74b5b9ae09af7f6",
+    "after_sha256": "5ddd22a2f33b7cf881c2fab27d2f98f65b298a9d0e50b2b2b21416c93658cdf9"
+  }
+}

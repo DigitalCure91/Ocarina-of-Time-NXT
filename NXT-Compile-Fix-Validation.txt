@@ -1,0 +1,65 @@
+Ocarina of Time NXT - compile fix 1 validation
+
+The tests run the actual NxtWorld.cpp, NxtNavigation.cpp and NxtCombat.cpp
+against the source tree's engine headers, with a synthetic collision/actor fixture.
+They are not a full game or Windows/MSVC verification.
+
+GCC 14.2: Debug build; AddressSanitizer + UndefinedBehaviorSanitizer,
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+Exit status 0.
+
+Clang 17: Debug build, -Werror; exit status 0.
+NxtActors.cpp: GCC object compilation with -Werror; exit status 0.
+
+Negative control (old actor guard only): exit status 1, expected failure
+at LivingCount(true)==0 in the new actor-budget regression group.
+
+GCC test output:
+PASS level progression, caps, bounded combat and deterministic RNG
+PASS scene safety and defensive settings
+PASS ground, water, lethal floor, exit and ceiling rejection
+PASS bounded field navigation, connectivity, routing and distributed spawns
+PASS safe interior population, live retirement and room cleanup
+PASS all five bosses, separate reinforcement budget and boss departure
+PASS combat damage, friendly fire, XP credit and exactly-once rewards
+PASS regen combat delay, invulnerability and pause freeze
+PASS 20 percent berserker distribution and live scaling after combat
+PASS native collision proxy, source lifetime and scaling toggle
+PASS native resurrection and protected story-arena isolation
+PASS Mender casting and distinct world-boss warning abilities
+PASS scene actor budget uses category counts beyond the legacy byte counter
+PASS AI autonomous combat and bounded crowd stress
+PASS 14 groups, 520205 assertions
+
+Clang test output:
+PASS level progression, caps, bounded combat and deterministic RNG
+PASS scene safety and defensive settings
+PASS ground, water, lethal floor, exit and ceiling rejection
+PASS bounded field navigation, connectivity, routing and distributed spawns
+PASS safe interior population, live retirement and room cleanup
+PASS all five bosses, separate reinforcement budget and boss departure
+PASS combat damage, friendly fire, XP credit and exactly-once rewards
+PASS regen combat delay, invulnerability and pause freeze
+PASS 20 percent berserker distribution and live scaling after combat
+PASS native collision proxy, source lifetime and scaling toggle
+PASS native resurrection and protected story-arena isolation
+PASS Mender casting and distinct world-boss warning abilities
+PASS scene actor budget uses category counts beyond the legacy byte counter
+PASS AI autonomous combat and bounded crowd stress
+PASS 14 groups, 520205 assertions
+
+Negative-control output:
+PASS level progression, caps, bounded combat and deterministic RNG
+PASS scene safety and defensive settings
+PASS ground, water, lethal floor, exit and ceiling rejection
+PASS bounded field navigation, connectivity, routing and distributed spawns
+PASS safe interior population, live retirement and room cleanup
+PASS all five bosses, separate reinforcement budget and boss departure
+PASS combat damage, friendly fire, XP credit and exactly-once rewards
+PASS regen combat delay, invulnerability and pause freeze
+PASS 20 percent berserker distribution and live scaling after combat
+PASS native collision proxy, source lifetime and scaling toggle
+PASS native resurrection and protected story-arena isolation
+PASS Mender casting and distinct world-boss warning abilities
+FAIL LivingCount(true)==0 at line 222

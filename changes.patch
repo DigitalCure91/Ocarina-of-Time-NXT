@@ -1,0 +1,2700 @@
+--- /dev/null
++++ b/Build-Nxt.ps1
+@@ -0,0 +1,43 @@
++[CmdletBinding()]
++param(
++    [ValidateRange(1,64)][int]$Jobs = 4,
++    [ValidateSet('Release','Debug','RelWithDebInfo')][string]$Configuration = 'Release',
++    [switch]$TestsOnly
++)
++Set-StrictMode -Version Latest
++$ErrorActionPreference = 'Stop'
++$Root = $PSScriptRoot
++$CmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
++$Cmake = if ($CmakeCommand) { $CmakeCommand.Source } else { 'C:\Program Files\CMake\bin\cmake.exe' }
++if (-not (Test-Path $Cmake)) { throw 'CMake 3.26 or newer is required. Add cmake.exe to PATH.' }
++function Invoke-Checked([string[]]$Arguments) {
++    & $Cmake @Arguments
++    if ($LASTEXITCODE -ne 0) { throw "CMake failed with exit code $LASTEXITCODE. See the first error above." }
++}
++Push-Location $Root
++try {
++    if ($TestsOnly) {
++        $Build = Join-Path $Root 'build/nxt-tests'
++        Invoke-Checked -Arguments @('-S','tests/nxt','-B',$Build,'-G','Visual Studio 17 2022','-T','v143','-A','x64')
++        Invoke-Checked -Arguments @('--build',$Build,'--config',$Configuration,'--parallel',"$Jobs")
++        & (Join-Path (Split-Path $Cmake) 'ctest.exe') --test-dir $Build -C $Configuration --output-on-failure
++        if ($LASTEXITCODE -ne 0) { throw 'NXT headless tests failed.' }
++        return
++    }
++    foreach ($font in @('PressStart2P-Regular.ttf','Fipps-Regular.otf','Inconsolata-Regular.ttf','Montserrat-Regular.ttf','NotoSansJP-Regular.ttf')) {
++        if (-not (Test-Path (Join-Path $Root "soh/assets/custom/fonts/$font"))) {
++            throw "An unchanged baseline font asset is missing: $font. Apply the overlay to your original source, or run Restore-NxtBaselineAssets.ps1 -BaselineDirectory 'C:\path\to\original-source'."
++        }
++    }
++    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Git is required for the upstream dependency downloads.' }
++    foreach ($path in @('libultraship/CMakeLists.txt','torch/CMakeLists.txt')) {
++        if (-not (Test-Path (Join-Path $Root $path))) { throw "Missing populated baseline dependency: $path. Use the complete original source, not an empty submodule folder." }
++    }
++    # Separate build directory: never reuse a cache generated against a different source tree.
++    $Build = Join-Path $Root 'build/nxt-win64'
++    Invoke-Checked -Arguments @('-S',$Root,'-B',$Build,'-G','Visual Studio 17 2022','-T','v143','-A','x64')
++    Invoke-Checked -Arguments @('--build',$Build,'--config',$Configuration,'--target','soh','GenerateSohOtr','--parallel',"$Jobs")
++    Write-Host 'NXT compilation completed. Executable locations:'
++    Get-ChildItem $Build -Recurse -Filter soh.exe | ForEach-Object { Write-Host $_.FullName }
++    Write-Host 'Use your own compatible oot.o2r / oot-mq.o2r assets. Read README_NXT.md before loading saves.'
++} finally { Pop-Location }
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -39,7 +39,7 @@
+ # Use the patch number to select the correct word
+ list(GET NATO_PHONETIC_ALPHABET ${PATCH_INDEX} PROJECT_PATCH_WORD)
+ 
+-set(PROJECT_BUILD_NAME "Dewey ${PROJECT_PATCH_WORD}" CACHE STRING "" FORCE)
++set(PROJECT_BUILD_NAME "NXT RPG 1.0 - Dewey ${PROJECT_PATCH_WORD}" CACHE STRING "" FORCE)
+ set(PROJECT_TEAM "github.com/harbourmasters" CACHE STRING "" FORCE)
+ 
+ execute_process(
+@@ -47,7 +47,12 @@
+     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+     OUTPUT_VARIABLE GIT_BRANCH
+     OUTPUT_STRIP_TRAILING_WHITESPACE
+-)
++    ERROR_QUIET
++)
++
++if(NOT GIT_BRANCH)
++    set(GIT_BRANCH "nxt-source-archive")
++endif()
+ 
+ set(CMAKE_PROJECT_GIT_BRANCH "${GIT_BRANCH}" CACHE STRING "Git branch" FORCE)
+ 
+@@ -56,7 +61,12 @@
+     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+     OUTPUT_VARIABLE GIT_COMMIT_HASH
+     OUTPUT_STRIP_TRAILING_WHITESPACE
+-)
++    ERROR_QUIET
++)
++
++if(NOT GIT_COMMIT_HASH)
++    set(GIT_COMMIT_HASH "archive")
++endif()
+ 
+ # Get only the first 7 characters of the hash
+ string(SUBSTRING "${GIT_COMMIT_HASH}" 0 7 SHORT_COMMIT_HASH)
+@@ -68,6 +78,7 @@
+     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+     OUTPUT_VARIABLE GIT_COMMIT_TAG
+     OUTPUT_STRIP_TRAILING_WHITESPACE
++    ERROR_QUIET
+ )
+ 
+ if(NOT GIT_COMMIT_TAG)
+--- /dev/null
++++ b/README_NXT.md
+@@ -0,0 +1,116 @@
++# Ocarina of Time NXT — living-world RPG source extension
++
++Source edition 1.0 • 11 October 2026 • based exclusively on the supplied `OcarinaOfTime-NXT.rar`.
++
++## Delivery status
++
++This is an implemented source extension, not a compiled executable or an in-game-verified release. Four engine-facing C++ units compile against the supplied engine headers. The three modified legacy C units pass syntax checks with the baseline's compile definitions and legacy warning settings. Thirteen headless test groups pass under address/undefined-behavior sanitizers. GUI rendering, JSON save integration, the full application link, Windows compilation, actual scene traversal and performance still require validation in the game. See `docs/NXT_VALIDATION.md` for the exact boundary.
++
++## Install
++
++**Recommended: apply `NXT-RPG-Overlay.zip` to a separate copy of your extracted original source.** It preserves unchanged assets and does not require replacing the entire project.
++
++Extract the overlay elsewhere, then run from its directory:
++
++```powershell
++python .\apply_nxt.py --target "C:\Games\OcarinaOfTime-NXT" --check
++python .\apply_nxt.py --target "C:\Games\OcarinaOfTime-NXT" --apply
++```
++
++The installer checks original file hashes, checks payload hashes, refuses conflicting source edits, and backs up replaced files under `.nxt-backups`. It does not touch your game saves or configuration. Alternatively, copy the CONTENTS of its `files` directory over a clean copy of the original source root, accepting replacement of the listed files.
++
++The full source snapshot is an alternative. It deliberately does not redistribute the five unchanged font assets. Restore those from YOUR extracted baseline before building:
++
++```powershell
++.\Restore-NxtBaselineAssets.ps1 -BaselineDirectory "C:\Games\Original-OcarinaOfTime-NXT"
++```
++
++Do not replace the included libultraship tree with a different revision: it contains the game-image overlay integration needed by the NXT HUD. The original target name (`soh`), asset names and `shipofharkinian.json` remain unchanged for compatibility; the window title, NXT control panel, HUD and build label use Ocarina of Time NXT. Original credits and game-title artwork are retained.
++
++## Build on Windows
++
++Use the baseline prerequisites in `docs/BUILDING.md`: Visual Studio 2022 with Desktop development with C++, MSVC v143 and a Windows SDK, CMake 3.26+, Python 3 and Git. The full build needs access to upstream dependencies; they are not all vendored in the supplied archive.
++
++From the updated source root in PowerShell:
++
++```powershell
++.\Build-Nxt.ps1 -Jobs 4
++```
++
++This configures a new `build/nxt-win64` directory and builds `soh` and `GenerateSohOtr`. Do not reuse an old build cache. With restrictive PowerShell execution policy, use the equivalent explicit commands instead:
++
++```powershell
++cmake -S . -B build/nxt-win64 -G "Visual Studio 17 2022" -T v143 -A x64
++cmake --build build/nxt-win64 --config Release --target soh GenerateSohOtr --parallel 4
++```
++
++Use your own compatible extracted game assets (`oot.o2r` / `oot-mq.o2r`) or the baseline's supported extraction flow. No ROM or extracted Nintendo game archive is supplied. On Linux, install the original build dependencies and use `bash build-nxt.sh`.
++
++## First launch and controls
++
++Back up normal save files and `shipofharkinian.json` first. **Do not load binary save states created by another build**: the save-context and collision-context layouts changed. Use an ordinary in-game save slot.
++
++Open the native menu and select **Enhancements → NXT RPG → Open RPG control panel**. Its tabs are Character, Population, World bosses, Display and Diagnostics. The framework is enabled by default. A normal existing slot starts its NXT progression at level 1 without intentionally resetting story data. Save normally to persist NXT progression; this extension does not introduce a new autosave loop.
++
++| Default | Value |
++|---|---:|
++| Roaming bots, outdoor/combat maps | 30 |
++| Safe interior bots | 10 |
++| Added regular enemies | 2 per configured bot, capped at 90 |
++| Hyrule Field world bosses | 5 |
++| Raid reinforcements | Up to 12 per boss, 36 total |
++| Berserker chance, newly added regular enemies | 20% |
++| Enemy/bot level variation | ±3, clamped to levels 1–100 |
++| World-boss level | Player level +5, with variation and level cap |
++| Regular enemy respawn | 35 active-play seconds |
++| World-boss respawn | 20 active-play minutes |
++| Boss health-budget duration target | 300 seconds; not a guaranteed kill time |
++| Health-regeneration delay | 7 active-play seconds after damage or player attack |
++| Base regeneration | 3% maximum health/second, with Spirit bonus |
++| Visible nameplate limit | 24 |
++
++Population sliders, map-specific bot overrides, combat/XP multipliers, berserk percentage, spawn/respawn settings, boss health budgets, reinforcements, recovery, HUD scale/offset and nameplate settings are adjustable. The shared safety cap is 220 tracked actors, including eligible original enemies; unsafe or crowded terrain can reduce achieved counts. Setting changes that reduce populations retire surplus NXT actors. Stat changes apply at spawn or once an actor is out of combat.
++
++## Implemented systems
++
++**Adventurers.** Independent Link-based actors with 24 tunic colours, unique names and their own animation/AI state. Vanguard, Skirmisher and Mender roles vary combat behaviour. Bots patrol collision-validated ground, seek fights in combat territories, separate from crowds, recover health, and respawn after defeat. Menders can heal nearby bots. Bots do not body-block the real player or trigger ordinary NPC dialogue.
++
++**Combat populations.** Additional Stalfos, Lizalfos, Moblin, Wolfos and Dodongo-themed actors, selected according to territory. They use the game's models but independent NXT combat controllers. New hostile actors are not placed in the engine's enemy category, so simply clearing them does not complete original dungeon rooms. Player attacks can hit their collision bodies; enemies can target the player or bots. Bot attacks on eligible original enemies use native collision handling. Original enemy AI is retained, including its player-centric target selection; this is not a rewrite of every native actor's AI.
++
++**Progression.** Levels 1–100, HP, Attack, Defense, Spirit, Agility and critical chance. Weapon damage inputs feed the RPG formula; defense mitigates damage, agility affects evasion, and Spirit supports recovery/Mender healing. Added enemies and bots scale with the player. Eligible original enemies receive a bounded RPG-health proxy without expanding their legacy health field. Story bosses and excluded protected arenas retain their original damage logic. Hearts remain authoritative for the player: displayed RPG HP maps to the existing heart capacity, preserving containers, healing items and death handling.
++
++**XP and recovery.** Player participation within the credit window grants full kill XP; nearby untagged bot victories grant 35% with sharing enabled. Berserk enemies and world bosses grant more XP. Rewards are guarded against duplicate death notifications. Level-up heals the player. XP, level, victory totals and boss cooldowns are stored in a versioned `nxtRpg` JSON section per save slot, from the SaveManager snapshot.
++
++**World bosses.** Five separate giant encounters are placed on validated, widely separated Hyrule Field terrain. A dedicated reinforcement population gathers near a player-approached encounter and departs after its boss dies or the encounter is abandoned. Regular adventurers are not converted into raid helpers. The five bosses have different telegraphed area attacks and an enrage phase below 30% HP.
++
++| Boss | Model family | Ability |
++|---|---|---|
++| Morrow, the Bone Colossus | Giant Stalfos | Bonequake: radial shock |
++| Varkesh, Hyrule's Ravager | Giant Dinolfos | Rending Arc: frontal sector |
++| Gorvath, the Iron Bulwark | Giant Moblin | Breaker Shock: radial strike |
++| Ashfang, the Moonstalker | Giant Wolfos | Moon Howl: wide-area disruption |
++| Cindermaw, the Earthshaker | Giant Dodongo | Cinder Eruption: target-position ring |
++
++**Berserkers and presentation.** The default 20% roll applies to newly added regular NXT enemies, not all original story actors. Berserkers have stronger stats, faster movement and attacks, accelerated animation and orange/red particles. HUD elements show player health/level/XP, name/level/HP plates, role/state/berserk indicators, combat numbers, boss health and cast countdowns. Ground warnings are real in-world geometry. Nameplates use camera projection, distance limits, wall tests and overlap reduction. An image-overlay callback puts them after the game image and below interactive windows.
++
++## World coverage and deliberate limits
++
++This is a single-player simulation of the currently loaded scene/room, not a network MMO or a persistent simulation of unloaded maps. Populations rebuild when scenes/rooms change. Collision surveying and spawning are gradual; the Diagnostics tab reports progress and achieved counts.
++
++Ordinary accessible overworld maps, dungeons and safe interiors are classified by the source. Towns/houses receive bots but no ADDED enemies. Scripted cutscene maps, native story-boss arenas, escape-collapse scenes, stealth courtyards and several minigame spaces are excluded to protect progression. Small rooms may fit fewer than the requested population. Bots cannot swim, climb ladders, crawl, solve puzzles or traverse disconnected unloaded rooms. Boss locations depend on the validated terrain survey, not hardcoded coordinates. Rendering, geometry fit and navigation through every real map are not verified here.
++
++## Tests and developer files
++
++```powershell
++.\Build-Nxt.ps1 -TestsOnly
++```
++
++Or, with a suitable C++20 compiler:
++
++```sh
++cmake -S tests/nxt -B build/nxt-tests -DCMAKE_BUILD_TYPE=Debug
++cmake --build build/nxt-tests --parallel 4
++ctest --test-dir build/nxt-tests --output-on-failure
++```
++
++On GCC/Clang, add `-DNXT_SANITIZE=ON` to enable address/undefined-behaviour sanitizers. Tests use the real engine headers and a synthetic geometry/actor fixture; they are not a substitute for launching the game. New production code is under `soh/soh/Enhancements/NxtRpg/`. The `NxtRules.h` arithmetic is separate from the engine. See `docs/NXT_SETTINGS.md` and `docs/NXT_VALIDATION.md`.
+--- /dev/null
++++ b/Restore-NxtBaselineAssets.ps1
+@@ -0,0 +1,16 @@
++[CmdletBinding()]
++param([Parameter(Mandatory=$true)][string]$BaselineDirectory)
++Set-StrictMode -Version Latest
++$ErrorActionPreference = 'Stop'
++$Names = @('PressStart2P-Regular.ttf','Fipps-Regular.otf','Inconsolata-Regular.ttf','Montserrat-Regular.ttf','NotoSansJP-Regular.ttf')
++$Source = Join-Path (Resolve-Path $BaselineDirectory).Path 'soh/assets/custom/fonts'
++$Destination = Join-Path $PSScriptRoot 'soh/assets/custom/fonts'
++foreach ($Name in $Names) {
++    if (-not (Test-Path (Join-Path $Source $Name))) { throw "Baseline asset not found: $Source/$Name. Point to the extracted source root, not the RAR file." }
++}
++New-Item -ItemType Directory -Force $Destination | Out-Null
++foreach ($Name in $Names) {
++    $Target = Join-Path $Destination $Name
++    if (-not (Test-Path $Target)) { Copy-Item -LiteralPath (Join-Path $Source $Name) -Destination $Target }
++}
++Write-Host 'Missing unchanged assets were copied from your local baseline. Existing destination assets were left unchanged.'
+--- /dev/null
++++ b/build-nxt.sh
+@@ -0,0 +1,16 @@
++#!/usr/bin/env bash
++set -euo pipefail
++cd "$(dirname "$0")"
++JOBS="${JOBS:-4}"
++if [[ "${1:-}" == "--tests" ]]; then
++    cmake -S tests/nxt -B build/nxt-tests -DCMAKE_BUILD_TYPE=Debug "-DNXT_SANITIZE=${NXT_SANITIZE:-OFF}"
++    cmake --build build/nxt-tests --parallel "$JOBS"
++    ctest --test-dir build/nxt-tests --output-on-failure
++    exit
++fi
++for font in PressStart2P-Regular.ttf Fipps-Regular.otf Inconsolata-Regular.ttf Montserrat-Regular.ttf NotoSansJP-Regular.ttf; do
++    [[ -f "soh/assets/custom/fonts/$font" ]] || { echo "Missing unchanged baseline asset: $font. Apply the overlay to your original source or copy its soh/assets/custom/fonts directory." >&2; exit 1; }
++done
++# Install the baseline's Linux dependencies first; see docs/BUILDING.md.
++cmake -S . -B build/nxt-release -DCMAKE_BUILD_TYPE=Release
++cmake --build build/nxt-release --target soh GenerateSohOtr --parallel "$JOBS"
+--- /dev/null
++++ b/docs/NXT_SETTINGS.md
+@@ -0,0 +1,46 @@
++# NXT settings reference
++
++All keys use the existing native console-variable storage, prefixed `gNxt.`. Prefer the native control panel. Settings persist in the existing configuration; progression persists separately in each normal game save. Booleans default to 1 unless stated otherwise.
++
++| Key suffix | Default | Accepted simulation range / purpose |
++|---|---:|---|
++| Enabled | 1 | Entire NXT framework |
++| Rpg | 1 | Progression / player RPG damage |
++| Bots | 1 | Regular adventurers, independent of raid helper controls |
++| Enemies | 1 | Additional regular encounters |
++| WorldBosses | 1 | Five field encounters and their helpers |
++| ScaleNative | 1 | RPG health/damage for eligible original enemies |
++| Regen | 1 | Player recovery |
++| ShareXp | 1 | Nearby untagged kill XP |
++| BotCount | 30 | 0–50 |
++| IndoorCount | 10 | 0–50 |
++| Scene.<numeric_scene_id>.Bots | -1 | -1 inherit; 0–50 override |
++| EnemyRatio | 2 | 0–4 added enemies per configured adventurer; uses a minimum base population of 10 |
++| EnemyCap | 90 | 0–120 |
++| RaidSize | 12 | 0–24 per encounter |
++| RaidCap | 36 | 0–48 total |
++| LevelSpread | 3 | 0–10 |
++| BerserkChance | 20 | 0–100 percent; applied at spawn |
++| EnemyRespawn | 35 | 5–300 active-play seconds |
++| BossRespawn | 20 | 2–120 active-play minutes, used on the next defeat |
++| BossDuration | 300 | 60–900 seconds, used to estimate HP |
++| RegenDelay | 7 | 0–60 active-play seconds |
++| XpRate | 1 | 0.1–10 |
++| DamageRate | 1 | 0.1–5 |
++| RegenPercent | 3 | 0.1–20 percent/second, before Spirit bonus |
++| BossHpRate | 1 | 0.25–5 |
++| BotPower | 1 | 0.25–3 |
++| Hud | 1 | Player HUD |
++| Nameplates | 1 | Nameplates |
++| FriendlyPlates | 1 | Bot nameplates |
++| CombatText | 1 | Floating damage/heal/XP text |
++| BossHud | 1 | Boss encounter header |
++| PlateLimit | 24 | 4–64 |
++| PlateDistance | 1500 | 200–4000 world units |
++| HudScale | 1 | 0.65–1.6, additionally fitted to viewport height |
++| HudOffset | 24 | 0–160 vertical pixels |
++| SettingsWindow | 0 | Saved visibility of the control panel |
++
++Some native sliders intentionally expose a narrower convenience range than the simulation's defensive input clamp. Invalid non-finite numeric configuration values fall back to defaults. Live changes to level-related tuning preserve HP proportion and defer rescaling until the affected unit leaves combat. Respawn timers and boss kill credit are not reset by the Repopulate button. Disabling the entire framework leaves recorded progression intact.
++
++Default per-map selection: safe scenes with an ID below Hyrule Field use IndoorCount; other eligible scenes use BotCount. The map override takes precedence. The enemy spawn allowlist is separate and always keeps newly added hostiles out of safe scenes.
+--- /dev/null
++++ b/docs/NXT_VALIDATION.md
+@@ -0,0 +1,65 @@
++# Validation report — NXT source edition 1.0
++
++Date: 11 October 2026. Target: the uploaded OcarinaOfTime-NXT source tree, not the earlier 2Ship/Termina project.
++
++## Checks performed
++
++* Compiled `NxtWorld.cpp`, `NxtNavigation.cpp`, `NxtCombat.cpp` and `NxtActors.cpp` against the uploaded project's real C/C++ engine headers with GCC/G++ 14.2 and C++20. The first three are also linked into the headless executable. The rendering/actor unit was object-compiled, not engine-linked.
++* Syntax-checked the modified full `z_actor.c`, `z_parameter.c` and `z_collision_check.c` using GNU C23, the original CVar-prefix definitions and the project's legacy pointer/integer-conversion warning allowances. All three passed. This is not a full application link.
++* Built and ran the standalone `tests/nxt` executable with `-fsanitize=address,undefined`, frame pointers and leak detection. Thirteen groups / 520,201 assertions passed. Most assertions belong to deterministic arithmetic fuzz loops; this number does not represent that many distinct gameplay scenarios.
++* Reviewed callback signatures, SaveManager snapshot use, actor allocation/lifetime, collision-source snapshots, native GUI constructors and actual GUI frame ordering against this source tree.
++
++## Headless test coverage
++
++1. XP thresholds, multi-level awards, cap handling, deterministic RNG and bounded damage/stat calculations.
++2. Safe-map classification, protected scenes, per-scene overrides and invalid configuration clamping.
++3. Floor, water, death floor, exit, slope and wall rejection.
++4. Bounded navigation graph, long routes, distribution across a synthetic field and giant-model ceiling rejection.
++5. Safe-interior populations, live retirement and room cleanup.
++6. Five separated boss spawns, separate reinforcement limits, cooldown credit and helper departure.
++7. Combat damage, friendly-fire suppression, full kill XP and exactly-once reward guards.
++8. Regeneration delay, invulnerability and pause/cutscene freezing.
++9. A 10,000-spawn berserker distribution check and deferred live rescaling after combat.
++10. Native health proxy, collision-source cleanup and original-enemy scaling toggle.
++11. In-place native resurrection and protected story-arena isolation.
++12. Mender healing casts and the five different boss-warning configurations / enrage transition.
++13. Autonomous crowd combat, population cap stress, live reductions and teardown.
++
++The fixture implements a synthetic flat ground plane with optional water/walls/hazards/ceiling. Actor spawning/destruction and collision query boundaries are replaced at link time. The actual engine public headers, NXT rules, navigation, population and combat implementation are used. Native weapon collision resolution, models and GPU rendering are NOT executed by this fixture.
++
++## Findings corrected during implementation
++
++* Independent actor animation state avoids Dark Link's shared overlay state and the fixed-size shared player-animation task queue.
++* Collision data is recorded while valid, so a destroyed projectile's collider is not dereferenced later. Destroy hooks clear targets and source records.
++* Custom hostiles are outside the original enemy category, protecting dungeon-clear checks.
++* Player damage preserves lethal scripted hazards, with a scoped guard against double conversion of NXT-origin damage.
++* Original enemy scaling is isolated from protected story arenas and respects its toggle. Native resurrection restores tracked health and reward eligibility.
++* Stat tuning and player level-ups rescale out-of-combat units even if they were fighting when the change occurred.
++* Population reductions retire existing actors; boss-disable and raid-cap changes retire affected helpers separately.
++* Terrain sampling is shuffled before its node budget fills, instead of consuming the entire graph near the entrance. Giant spawn tests include headroom.
++* The HUD is dispatched after Fast3dGui draws the actual game image. Ordinary GUI windows draw earlier and would have their appended game draw commands cleared.
++* Windows-reserved/common macro names were avoided in new identifiers and min/max calls; the baseline also defines NOMINMAX for the game target.
++
++## Not verified / remaining release gates
++
++No playable executable was built or launched here. Full Linux configuration stops at a missing `lsb_release` prerequisite in the baseline build. This environment also does not provide the complete external dependency set or a runnable game/ROM asset installation. A Visual Studio build was not run. GUI/SaveManager integration units and the full libultraship modification were source-reviewed, not compiled with their complete third-party dependency graph.
++
++Before treating this as a release, run these checks on a local build:
++
++| Check | Required outcome |
++|---|---|
++| Clean VS2022 x64 Release build | Full compile and link, including NxtGui/NxtIntegration and modified libultraship |
++| Normal old save and fresh slot | Story/inventory preserved; NXT starts at level 1 when absent |
++| Save, quit, reopen; switch slots | Level/XP/totals/cooldowns restored independently; no cross-slot leakage |
++| Adult and child Link | Coloured meshes, sword/shield/face texture segments and all animations valid |
++| All five enemy models | Skeletons/materials/death poses render correctly in each relevant scene |
++| Every ordinary overworld, dungeon and safe interior | Safe placement, plausible coverage, no crashes or progression softlocks |
++| Original boss/minigame/cutscene scenes | No added population; original encounter logic unchanged |
++| Hyrule Field, child/adult/day/night | All five giant encounter sites fit terrain and avoid entrances/bridges |
++| Sword/projectile/native enemy attacks | Correct collision credit, no stale actor pointers or friendly fire |
++| Full boss encounters | HP/damage pacing, helper arrival/departure, telegraphs and enrage feel fair |
++| HUD at 4:3, widescreen, letterboxed, docked and integer-scaled sizes | Correct projection, clipping, layering and legible text |
++| Population presets and maxima | Stable frame times, collider budgets and clean transitions |
++| Disable/re-enable/repopulate during normal play | Safe cleanup/rebuild without changing story flags |
++
++Use a backed-up normal save. Binary save states from older builds are incompatible with the changed context layouts. The requested “all maps” behaviour is deliberately bounded by protected scenes, room streaming, available safe ground and the no-swimming/no-climbing ground navigator. Original enemy targeting logic remains native; full bot-aware targeting is implemented for the newly added encounter actors.
+--- a/libultraship/include/fast/Fast3dGui.h
++++ b/libultraship/include/fast/Fast3dGui.h
+@@ -1,5 +1,7 @@
+ #pragma once
+ #include <SDL2/SDL.h>
++#include <functional>
++#include <utility>
+ 
+ #include "Fast3dWindow.h"
+ #include "ship/window/gui/Gui.h"
+@@ -140,6 +142,16 @@
+ 
+     void RefreshImGuiGamepads() override;
+ 
++    // Screen-space bounds of the actual game image, including aspect/integer-scale correction.
++    ImVec2 GetGameImagePosition() const { return mGameImagePosition; }
++    ImVec2 GetGameImageSize() const { return mGameImageSize; }
++    float GetGameImageAspect() const { return mGameImageAspect; }
++    // Invoked after the game image is drawn, while its current-frame draw list is valid.
++    // Ordinary GuiWindow::Draw runs before DrawGame and cannot safely append to this list.
++    void AddGameImageOverlay(std::function<void()> overlay) {
++        mGameImageOverlays.push_back(std::move(overlay));
++    }
++
+   protected:
+     void ImGuiWMInit() override;
+     void ImGuiWMShutdown() override;
+@@ -163,6 +175,10 @@
+     GuiWindowInitData mImpl;                 ///< Backend-specific window/context handles passed to Init().
+ 
+   private:
++    std::vector<std::function<void()>> mGameImageOverlays;
++    ImVec2 mGameImagePosition{0, 0};
++    ImVec2 mGameImageSize{0, 0};
++    float mGameImageAspect = 4.0f / 3.0f;
+     /** @brief Applies any pending resolution or MSAA changes to the render target. */
+     void ApplyResolutionChanges();
+ 
+--- a/libultraship/src/fast/Fast3dGui.cpp
++++ b/libultraship/src/fast/Fast3dGui.cpp
+@@ -417,7 +417,14 @@
+     uintptr_t fb = Ship::Context::GetRawInstance()->GetWindow()->GetGfxFrameBuffer();
+     if (fb) {
+         ImGui::SetCursorPos(pos);
++        mGameImagePosition = ImGui::GetCursorScreenPos();
++        mGameImageSize = size;
++        mGameImageAspect = interpreter->mCurDimensions.height == 0 ? 4.0f / 3.0f :
++            float(interpreter->mCurDimensions.width) / float(interpreter->mCurDimensions.height);
+         ImGui::Image(reinterpret_cast<ImTextureID>(fb), size);
++        for (const auto& overlay : mGameImageOverlays) {
++            if (overlay) overlay();
++        }
+     }
+ 
+     ImGui::End();
+--- a/soh/include/z64collision_check.h
++++ b/soh/include/z64collision_check.h
+@@ -1,9 +1,10 @@
+ #ifndef Z_COLLISION_CHECK_H
+ #define Z_COLLISION_CHECK_H
+ 
+-#define COLLISION_CHECK_AT_MAX 50
+-#define COLLISION_CHECK_AC_MAX 60
+-#define COLLISION_CHECK_OC_MAX 50
++// Bounded NXT crowd budget; distant custom actors do not register colliders.
++#define COLLISION_CHECK_AT_MAX 128
++#define COLLISION_CHECK_AC_MAX 256
++#define COLLISION_CHECK_OC_MAX 96
+ #define COLLISION_CHECK_OC_LINE_MAX 3
+ 
+ // From z64.h
+--- a/soh/include/z64save.h
++++ b/soh/include/z64save.h
+@@ -266,6 +266,15 @@
+     ShipQuestSpecificSaveContextData data;
+ } ShipQuestSaveContextData;
+ 
++// NXT progression is a versioned optional JSON section, isolated per save slot.
++typedef struct NxtRpgSaveData {
++    u32 level;
++    u32 xp;
++    u32 kills;
++    u32 bossKills;
++    u32 bossCooldown[5];
++} NxtRpgSaveData;
++
+ typedef struct ShipSaveContextData {
+     u16 pendingSale;
+     u16 pendingSaleMod;
+@@ -278,6 +287,7 @@
+     //TODO: Move non-rando specific flags to a new sohInf and move the remaining randomizerInf to ShipRandomizerSaveContextData
+     u16 randomizerInf[(RAND_INF_MAX + 15) / 16];
+     u8 resetToSpawn;
++    NxtRpgSaveData nxt;
+ } ShipSaveContextData;
+ 
+ #pragma endregion
+--- /dev/null
++++ b/soh/soh/Enhancements/NxtRpg/NxtActors.cpp
+@@ -0,0 +1,285 @@
++#include "NxtWorld.h"
++#include "NxtNavigation.h"
++#include "soh/ActorDB.h"
++#include "soh/ResourceManagerHelpers.h"
++#include "objects/gameplay_keep/gameplay_keep.h"
++#include "objects/object_link_boy/object_link_boy.h"
++#include "objects/object_link_child/object_link_child.h"
++#include "objects/object_sk2/object_sk2.h"
++#include "objects/object_zf/object_zf.h"
++#include "objects/object_mb/object_mb.h"
++#include "objects/object_wf/object_wf.h"
++#include "objects/object_dodongo/object_dodongo.h"
++#include <cmath>
++#include <cstring>
++#include <type_traits>
++
++namespace Nxt {
++// Actors are allocated/zeroed by the C engine. Never put C++ containers here.
++struct NxtActor {
++    Actor actor;
++    SkelAnime skel;
++    Vec3s joints[70], morph[70];
++    ColliderCylinder body, weapon;
++    const char* animationPath;
++    uint8_t ready, adult;
++};
++static_assert(std::is_trivially_copyable_v<NxtActor>);
++struct Model { const char* skeleton; const char* idle; const char* walk; const char* attack; const char* death; };
++static const Model models[] = {
++    {gStalfosSkel,gStalfosMiddleGuardAnim,gStalfosFastAdvanceAnim,gStalfosDownSlashAnim,gStalfosFallOverBackwardsAnim},
++    {gZfLizalfosSkel,gZfCryingAnim,gZfWalkingAnim,gZfSlashAnim,gZfDyingAnim},
++    {gEnMbSpearSkel,gEnMbSpearStandStillAnim,gEnMbSpearWalkAnim,gEnMbSpearChargeAnim,gEnMbSpearFallFaceDownAnim},
++    {gWolfosNormalSkel,gWolfosWaitingAnim,gWolfosRunningAnim,gWolfosSlashingAnim,gWolfosRearingUpFallingOverAnim},
++    {gDodongoSkel,gDodongoWaitAnim,gDodongoWalkAnim,gDodongoBreatheFireAnim,gDodongoDieAnim}
++};
++static const uint8_t tunics[24][3] = {
++    {36,165,94},{58,116,231},{219,55,76},{165,87,224},{235,164,45},{37,185,186},
++    {219,99,173},{234,234,213},{61,66,84},{94,144,67},{72,84,172},{166,54,42},
++    {105,66,137},{206,125,45},{29,112,133},{168,107,131},{144,167,187},{91,62,39},
++    {153,195,70},{112,167,245},{245,128,77},{196,157,240},{210,189,126},{66,211,168}
++};
++// No OC collider: adventurers cannot body-block doors, push the real player, or trigger NPC interactions.
++static ColliderCylinderInit bodyInit = {
++    {COLTYPE_HIT0,AT_NONE,AC_ON | AC_TYPE_PLAYER,OC1_NONE,OC2_NONE,COLSHAPE_CYLINDER},
++    {ELEMTYPE_UNK0,{0,0,0},{0xFFCFFFFF,0,0},TOUCH_NONE,BUMP_ON,OCELEM_NONE},
++    {20,70,0,{0,0,0}}
++};
++static ColliderCylinderInit weaponInit = {
++    {COLTYPE_HIT0,AT_ON | AT_TYPE_PLAYER,AC_NONE,OC1_NONE,OC2_NONE,COLSHAPE_CYLINDER},
++    {ELEMTYPE_UNK0,{0x00000200,0,2},{0,0,0},TOUCH_ON | TOUCH_SFX_NORMAL,BUMP_NONE,OCELEM_NONE},
++    {30,60,0,{0,0,0}}
++};
++static DamageTable damageTable;
++static Gfx lizalfosTexture[] = {gsSPTexture(0x0A00,0x0A00,0,G_TX_RENDERTILE,G_ON),gsSPEndDisplayList()};
++
++static void SampleLink(NxtActor* self,Unit& u) {
++    const char* path = u.action==Action::Dead ? gPlayerAnim_link_normal_re_dead_attack :
++        u.action==Action::Attack ? gPlayerAnim_link_fighter_Lside_kiru :
++        u.action==Action::Cast ? gPlayerAnim_link_fighter_defense_wait :
++        u.speed>0.1f ? gPlayerAnim_link_normal_run : gPlayerAnim_link_fighter_wait_long;
++    auto* animation=reinterpret_cast<LinkAnimationHeader*>(ResourceMgr_LoadAnimByName(path));
++    if(!animation || !animation->segment || animation->common.frameCount<=0)return;
++    if(self->animationPath!=path){self->animationPath=path;u.animFrame=0;}
++    const int count=animation->common.frameCount;
++    if(u.action==Action::Attack){
++        const float progress=1.0f-float(u.actionTimer)/float((std::max)(1,u.attackDuration));
++        u.animFrame=Clamp(progress,0.0f,1.0f)*(count-1);
++    } else {
++        u.animFrame+=u.speed>0.1f?Clamp(u.speed*0.34f,0.65f,2.4f):1.0f;
++        if(u.action==Action::Dead)u.animFrame=(std::min)(u.animFrame,float(count-1));
++        else u.animFrame=std::fmod(u.animFrame,float(count));
++    }
++    const int first=Clamp(int(u.animFrame),0,count-1),second=(first+1)%count;
++    const float blend=u.animFrame-first;
++    // Link's resource format includes one face-control s16 after the joint vectors.
++    // Read directly, avoiding the engine's fixed-size, shared player-animation job queue.
++    constexpr size_t stride=sizeof(Vec3s)*PLAYER_LIMB_MAX+sizeof(int16_t);
++    const auto* data=static_cast<const uint8_t*>(animation->segment);
++    std::memcpy(self->joints,data+stride*first,stride);
++    std::memcpy(self->morph,data+stride*second,stride);
++    for(int limb=0;limb<PLAYER_LIMB_MAX;++limb){
++        int16_t* lhs=&self->joints[limb].x;const int16_t* rhs=&self->morph[limb].x;
++        for(int axis=0;axis<3;++axis){
++            const int delta=limb==0?int(rhs[axis])-lhs[axis]:int(static_cast<int16_t>(rhs[axis]-lhs[axis]));
++            lhs[axis]=static_cast<int16_t>(lhs[axis]+int(delta*blend));
++        }
++    }
++}
++static void Animate(NxtActor* self,Unit& u) {
++    if(u.bot){SampleLink(self,u);return;}
++    const auto& model=models[u.profile];
++    const char* path=u.action==Action::Dead?model.death:
++        (u.action==Action::Attack||u.action==Action::Cast)?model.attack:u.speed>0.1f?model.walk:model.idle;
++    auto* anim=reinterpret_cast<AnimationHeader*>(ResourceMgr_LoadAnimByName(path));
++    if(!anim)return;
++    if(self->animationPath!=path){
++        self->animationPath=path;
++        Animation_Change(&self->skel,anim,1.0f,0.0f,Animation_GetLastFrame(anim),
++            (u.action==Action::Dead||u.action==Action::Attack)?ANIMMODE_ONCE:ANIMMODE_LOOP,-3.0f);
++    }
++    self->skel.playSpeed=u.berserk?1.85f:u.enraged?1.40f:1.0f;
++    if(u.action==Action::Attack)self->skel.playSpeed=(self->skel.endFrame+1)/(std::max)(1,u.attackDuration);
++    SkelAnime_Update(&self->skel);
++}
++static void Initialize(Actor* actor,PlayState* play) {
++    auto* self=reinterpret_cast<NxtActor*>(actor);
++    const bool bot=actor->id==botActorId;
++    AddUnit(actor,bot);
++    auto* unit=Find(actor);if(!unit){Actor_Kill(actor);return;}
++    Unit& u=*unit;
++    self->adult=LINK_IS_ADULT;
++    Actor_SetScale(actor,u.modelScale);
++    ActorShape_Init(&actor->shape,0.0f,ActorShadow_DrawCircle,bot?22.0f:35.0f);
++    actor->gravity=0;actor->room=-1;
++    actor->uncullZoneForward=12000;actor->uncullZoneScale=500;actor->uncullZoneDownward=600;
++    actor->naviEnemyId=0xFF;
++    actor->colChkInfo.mass=MASS_IMMOVABLE;
++    actor->colChkInfo.health=1;
++    actor->colChkInfo.damageTable=&damageTable;
++    Collider_InitCylinder(play,&self->body);
++    Collider_SetCylinder(play,&self->body,actor,&bodyInit);
++    self->body.base.acFlags=AC_ON | (bot?AC_TYPE_ENEMY:AC_TYPE_PLAYER);
++    self->body.dim.radius=static_cast<s16>(u.radius);
++    self->body.dim.height=static_cast<s16>(u.height);
++    Collider_InitCylinder(play,&self->weapon);
++    Collider_SetCylinder(play,&self->weapon,actor,&weaponInit);
++    self->ready=1; // Collider lifetime is independent of whether an asset can be loaded.
++    const char* skelPath=bot?(self->adult?gLinkAdultSkel:gLinkChildSkel):models[u.profile].skeleton;
++    if(!bot&&u.bossIndex==1)skelPath=gZfDinolfosSkel;
++    SkeletonHeader* header=ResourceMgr_LoadSkeletonByName(skelPath,&self->skel);
++    if(!header || header->limbCount+1>70 || (bot&&header->limbCount+1!=PLAYER_LIMB_MAX)){
++        Actor_Kill(actor);return;
++    }
++    if(bot){
++        self->skel.skeletonHeader=header;
++        self->skel.skeleton=static_cast<void**>(SEGMENTED_TO_VIRTUAL(header->segment));
++        self->skel.limbCount=PLAYER_LIMB_MAX;
++        self->skel.dListCount=reinterpret_cast<FlexSkeletonHeader*>(header)->dListCount;
++        self->skel.jointTable=self->joints;self->skel.morphTable=self->morph;
++        SampleLink(self,u);
++    } else {
++        auto* anim=reinterpret_cast<AnimationHeader*>(ResourceMgr_LoadAnimByName(models[u.profile].idle));
++        if(!anim){Actor_Kill(actor);return;}
++        SkelAnime_Init(play,&self->skel,header,anim,self->joints,self->morph,header->limbCount+1);
++        self->animationPath=models[u.profile].idle;
++    }
++    self->ready=2;
++    actor->focus.pos=actor->world.pos;actor->focus.pos.y+=u.height;
++}
++static void Destroy(Actor* actor,PlayState* play) {
++    auto* self=reinterpret_cast<NxtActor*>(actor);
++    if(self->ready){Collider_DestroyCylinder(play,&self->body);Collider_DestroyCylinder(play,&self->weapon);}
++    // Frame arrays belong to the actor allocation, so SkelAnime_Free must not free them.
++    ResourceMgr_UnregisterSkeleton(&self->skel);
++    RemoveUnit(actor);
++}
++static void Update(Actor* actor,PlayState* play) {
++    auto* self=reinterpret_cast<NxtActor*>(actor);
++    Unit* ptr=Find(actor);
++    if(!ptr||self->ready!=2){Actor_Kill(actor);return;}
++    Unit& u=*ptr;
++    if(!Running(play)){self->body.base.acFlags&=~AC_HIT;return;}
++    if(self->body.base.acFlags&AC_HIT){
++        self->body.base.acFlags&=~AC_HIT;
++        // Projectiles may already have been destroyed earlier in this actor-update pass.
++        // Use the collision-time snapshot, never pointers into a former projectile's collider.
++        Actor* source=RecordedHitSource(actor);
++        int damage=actor->colChkInfo.damage;
++        if(damage==0)damage=RecordedTouchDamage(actor);
++        // Native enemy touchers commonly have damage in their collider rather than in a damage table.
++        HitUnit(u,source,damage);
++        self->body.base.ac=nullptr;
++    }
++    UpdateUnit(u,play);
++    if(!actor->update)return;
++    Animate(self,u);
++    actor->focus.pos=actor->world.pos;actor->focus.pos.y+=u.height;
++    float fade=u.action==Action::Dead?Clamp(u.actionTimer/30.0f,0.05f,1.0f):
++        u.action==Action::Depart?Clamp(u.actionTimer/15.0f,0.05f,1.0f):1.0f;
++    Actor_SetScale(actor,u.modelScale*fade);
++    if(Alive(u)){
++        Collider_UpdateCylinder(actor,&self->body);
++        // The original collision checker is quadratic. Only register bodies near the player or a combatant.
++        const float distance=DistanceXZ(actor->world.pos,GET_PLAYER(play)->actor.world.pos);
++        if(distance<2000||u.combatTimer>0||u.target)
++            CollisionCheck_SetAC(play,&play->colChkCtx,&self->body.base);
++        Unit* target=Find(u.target);
++        const bool strike=u.action==Action::Attack&&u.actionTimer<=u.attackDuration/2&&
++                          u.actionTimer>=u.attackDuration/2-1;
++        if(u.bot&&strike&&target&&target->native&&Alive(*target)&&
++           navigation.Clear(play,actor->world.pos,target->actor->world.pos)){
++            self->weapon.dim.pos.x=static_cast<s16>(actor->world.pos.x+Math_SinS(actor->shape.rot.y)*35);
++            self->weapon.dim.pos.z=static_cast<s16>(actor->world.pos.z+Math_CosS(actor->shape.rot.y)*35);
++            self->weapon.dim.pos.y=static_cast<s16>(actor->world.pos.y);
++            self->weapon.base.atFlags&=~(AT_HIT|AT_BOUNCED);
++            CollisionCheck_SetAT(play,&play->colChkCtx,&self->weapon.base);
++        }
++        if((u.berserk||u.enraged||(u.bot&&u.action==Action::Cast)) && (frame+u.serial)%8==0 && distance<1400){
++            Vec3f pos=actor->world.pos,velocity{0,1.8f,0},accel{0,0.02f,0};
++            pos.y+=u.height*(0.25f+Random01(u.seed)*0.55f);
++            pos.x+=(Random01(u.seed)-0.5f)*u.radius*2;pos.z+=(Random01(u.seed)-0.5f)*u.radius*2;
++            Color_RGBA8 primary{255,80,30,255},environment{190,8,30,255};
++            if(u.bot){primary={100,255,170,255};environment={20,150,100,255};}
++            EffectSsKiraKira_SpawnSmall(play,&pos,&velocity,&accel,&primary,&environment);
++        }
++    }
++}
++static s32 LinkLimb(PlayState*,s32 limb,Gfx** display,Vec3f*,Vec3s*,void* arg) {
++    auto* self=static_cast<NxtActor*>(arg);
++    if(limb==PLAYER_LIMB_WAIST)*display=(Gfx*)(self->adult?gLinkAdultWaistNearDL:gLinkChildWaistNearDL);
++    else if(limb==PLAYER_LIMB_L_HAND)*display=(Gfx*)(self->adult?gLinkAdultLeftHandHoldingMasterSwordNearDL:gLinkChildLeftFistAndKokiriSwordNearDL);
++    else if(limb==PLAYER_LIMB_R_HAND)*display=(Gfx*)(self->adult?gLinkAdultRightHandHoldingHylianShieldNearDL:gLinkChildRightFistAndDekuShieldNearDL);
++    else if(limb==PLAYER_LIMB_SHEATH)*display=(Gfx*)(self->adult?gLinkAdultSheathNearDL:gLinkChildSheathNearDL);
++    return false;
++}
++static void Telegraph(PlayState* play,const Unit& u) {
++    static char fileTag[]="NxtActors";
++    if(u.bossIndex<0||u.action!=Action::Cast)return;
++    OPEN_DISPS(play->state.gfxCtx);
++    Matrix_Push();
++    Matrix_Translate(u.castOrigin.x,u.castOrigin.y+4,u.castOrigin.z,MTXMODE_NEW);
++    Gfx_SetupDL_25Xlu(play->state.gfxCtx);
++    gSPClearGeometryMode(POLY_XLU_DISP++,G_LIGHTING|G_CULL_BACK|G_CULL_FRONT);
++    gDPSetCombineMode(POLY_XLU_DISP++,G_CC_PRIMITIVE,G_CC_PRIMITIVE);
++    gDPSetPrimColor(POLY_XLU_DISP++,0,0,255,72,32,static_cast<int>(120+60*std::sin(frame*0.6f)));
++    gSPMatrix(POLY_XLU_DISP++,Matrix_NewMtx(play->state.gfxCtx,fileTag,__LINE__),G_MTX_NOPUSH|G_MTX_LOAD|G_MTX_MODELVIEW);
++    constexpr int segments=40;
++    auto* vertices=static_cast<Vtx*>(Graph_Alloc(play->state.gfxCtx,sizeof(Vtx)*segments*4));
++    if(vertices){
++        const float progress=1.0f-float(u.actionTimer)/(std::max)(1,u.castDuration);
++        const float outer=u.castRadius,inner=outer*(0.93f-0.12f*Clamp(progress,0.0f,1.0f));
++        const float start=u.bossIndex==1?u.actor->shape.rot.y*(3.14159265f/32768.0f)-1.3744f:0;
++        const float arc=u.bossIndex==1?2.7488f:6.2831853f;
++        for(int i=0;i<segments;++i){
++            const float angles[4]={start+arc*i/segments,start+arc*(i+1)/segments,
++                                   start+arc*(i+1)/segments,start+arc*i/segments};
++            for(int j=0;j<4;++j){
++                Vtx& v=vertices[i*4+j];std::memset(&v,0,sizeof(v));
++                const float radius=j<2?outer:inner;
++                v.v.ob[0]=static_cast<s16>(std::sin(angles[j])*radius);
++                v.v.ob[2]=static_cast<s16>(std::cos(angles[j])*radius);
++                v.v.cn[0]=255;v.v.cn[1]=255;v.v.cn[2]=255;v.v.cn[3]=255;
++            }
++            gSPVertex(POLY_XLU_DISP++,reinterpret_cast<uintptr_t>(vertices+i*4),4,0);
++            gSP2Triangles(POLY_XLU_DISP++,0,1,2,0,0,2,3,0);
++        }
++    }
++    Matrix_Pop();
++    CLOSE_DISPS(play->state.gfxCtx);
++}
++static void Draw(Actor* actor,PlayState* play) {
++    auto* self=reinterpret_cast<NxtActor*>(actor);Unit* ptr=Find(actor);
++    if(!ptr||self->ready!=2)return;
++    Unit& u=*ptr;
++    OPEN_DISPS(play->state.gfxCtx);
++    Gfx_SetupDL_25Opa(play->state.gfxCtx);
++    if(u.bot){
++        const auto& color=tunics[u.color%24];
++        gDPSetEnvColor(POLY_OPA_DISP++,color[0],color[1],color[2],255);
++        gSPSegment(POLY_OPA_DISP++,0x08,reinterpret_cast<uintptr_t>(self->adult?gLinkAdultEyesOpenTex:gLinkChildEyesOpenTex));
++        gSPSegment(POLY_OPA_DISP++,0x09,reinterpret_cast<uintptr_t>(self->adult?gLinkAdultMouth1Tex:gLinkChildMouth1Tex));
++        SkelAnime_DrawFlexLod(play,self->skel.skeleton,self->joints,self->skel.dListCount,LinkLimb,nullptr,self,0);
++    }else{
++        gDPSetEnvColor(POLY_OPA_DISP++,u.berserk||u.enraged?110:0,0,0,255);
++        if(u.profile==1){gSPSegment(POLY_OPA_DISP++,0x08,reinterpret_cast<uintptr_t>(lizalfosTexture));gSPSegment(POLY_OPA_DISP++,0x09,reinterpret_cast<uintptr_t>(&D_80116280[2]));}
++        if(u.profile==3)gSPSegment(POLY_OPA_DISP++,0x08,reinterpret_cast<uintptr_t>(gWolfosNormalEyeOpenTex));
++        SkelAnime_DrawSkeletonOpa(play,&self->skel,nullptr,nullptr,self);
++    }
++    CLOSE_DISPS(play->state.gfxCtx);
++    Telegraph(play,u);
++}
++void InitActors() {
++    // Ordinary attacks retain meaningful differences (stun tools do not suddenly become lethal).
++    const uint8_t damages[32]={0,2,1,2,0,2,2,0,1,2,4,2,2,2,2,2,2,2,2,2,0,0,1,4,2,2,8,4,0,0,4,0};
++    for(int i=0;i<32;++i)damageTable.table[i]=damages[i];
++    ActorDBInit init;
++    init.name="NxtAdventurer";init.desc="Independent NXT adventurer";init.category=ACTORCAT_NPC;
++    init.flags=ACTOR_FLAG_UPDATE_CULLING_DISABLED;init.objectId=OBJECT_GAMEPLAY_KEEP;
++    init.instanceSize=sizeof(NxtActor);init.init=Initialize;init.destroy=Destroy;init.update=Update;init.draw=Draw;
++    botActorId=ActorDB::Instance->AddEntry(init).entry.id;
++    init.name="NxtEncounter";init.desc="NXT outdoor or dungeon encounter";init.category=ACTORCAT_PROP;
++    init.flags=ACTOR_FLAG_UPDATE_CULLING_DISABLED|ACTOR_FLAG_ATTENTION_ENABLED|ACTOR_FLAG_HOSTILE;
++    enemyActorId=ActorDB::Instance->AddEntry(init).entry.id;
++}
++} // namespace Nxt
+--- /dev/null
++++ b/soh/soh/Enhancements/NxtRpg/NxtBridge.h
+@@ -0,0 +1,14 @@
++#pragma once
++#include <stdint.h>
++struct Actor;
++struct PlayState;
++#ifdef __cplusplus
++extern "C" {
++#endif
++// A negative return means the vanilla damage path must be used unchanged.
++int Nxt_ApplyNativeDamage(struct Actor* actor);
++int16_t Nxt_AdjustPlayerDamage(struct PlayState* play, int16_t amount);
++void Nxt_RecordCollision(struct Actor* attacker, struct Actor* defender, uint8_t touchDamage);
++#ifdef __cplusplus
++}
++#endif
+--- /dev/null
++++ b/soh/soh/Enhancements/NxtRpg/NxtCombat.cpp
+@@ -0,0 +1,246 @@
++#include "NxtWorld.h"
++#include "NxtNavigation.h"
++#include <algorithm>
++#include <cmath>
++#include <limits>
++namespace Nxt {
++static bool TargetValid(const Unit& unit,PlayState* play){
++    if(!unit.target)return false;
++    if(unit.target==&GET_PLAYER(play)->actor)return gSaveContext.health>0;
++    Unit* target=Find(unit.target);
++    return target&&Alive(*target)&&target->serial==unit.targetSerial;
++}
++static void SetTarget(Unit& u,Actor* target){
++    if(u.target!=target){u.path.clear();u.pathCursor=0;}
++    u.target=target;Unit* other=Find(target);u.targetSerial=other?other->serial:0;
++}
++static void ChooseTarget(Unit& u,PlayState* play){
++    Actor* player=&GET_PLAYER(play)->actor;
++    if(u.raid){
++        for(auto& [a,other]:units)if(other.bossIndex==u.squad&&Alive(other)){SetTarget(u,a);return;}
++        u.action=Action::Depart;u.actionTimer=60;SetTarget(u,nullptr);return;
++    }
++    if(!CombatScene(play->sceneNum)){SetTarget(u,nullptr);return;}
++    float best=u.bossIndex>=0?1100.0f:620.0f;
++    Actor* result=nullptr;
++    if(!u.bot&&DistanceXZ(u.actor->world.pos,player->world.pos)<best&&
++        std::fabs(u.actor->world.pos.y-player->world.pos.y)<200&&navigation.Clear(play,u.actor->world.pos,player->world.pos)){
++        best=DistanceXZ(u.actor->world.pos,player->world.pos)*(frame-u.lastPlayerTag<160?0.50f:1.0f);result=player;
++    }
++    for(auto& [a,other]:units){
++        if(a==u.actor||!Alive(other)||other.bot==u.bot)continue;
++        if(u.bot&&other.bossIndex>=0)continue; // Keep ordinary adventurers on their own patrols.
++        if(!u.bot&&other.native)continue;
++        if(std::fabs(a->world.pos.y-u.actor->world.pos.y)>150)continue;
++        float distance=DistanceXZ(a->world.pos,u.actor->world.pos);
++        if(distance<best&&navigation.Clear(play,u.actor->world.pos,a->world.pos)){
++            best=distance;result=a;
++        }
++    }
++    SetTarget(u,result);
++}
++static void ChooseWander(Unit& u){
++    if(navigation.nodes.empty())return;
++    int here=navigation.Nearest(u.actor->world.pos,true);
++    if(here<0)return;
++    int goal=here;
++    // Walk along the connected graph, rather than continually selecting an unreachable random point.
++    for(int step=0;step<3+static_cast<int>(NextRandom(u.seed)%5);++step){
++        const auto& links=navigation.nodes[goal].edges;if(links.empty())break;
++        int candidate=links[NextRandom(u.seed)%links.size()];
++        if(DistanceXZ(navigation.nodes[candidate].pos,u.home)<(u.bot?1800.0f:700.0f))goal=candidate;
++    }
++    u.goal=navigation.nodes[goal].pos;u.path=navigation.Route(here,goal);u.pathCursor=0;
++}
++static void MoveToward(Unit& u,PlayState* play,const Vec3f& destination,float speed){
++    Vec3f aim=destination;
++    if(!navigation.Clear(play,u.actor->world.pos,destination)||u.stuckTimer>10){
++        if(u.path.empty()||u.pathCursor>=u.path.size()||frame%30==static_cast<int>(u.serial%30)){
++            int begin=navigation.Nearest(u.actor->world.pos),end=navigation.Nearest(destination);
++            u.path=navigation.Route(begin,end);u.pathCursor=0;
++        }
++        if(u.pathCursor<u.path.size()){
++            while(u.pathCursor+1<u.path.size()&&DistanceXZ(u.actor->world.pos,navigation.nodes[u.path[u.pathCursor]].pos)<45)
++                ++u.pathCursor;
++            aim=navigation.nodes[u.path[u.pathCursor]].pos;
++        }
++    }
++    float dx=aim.x-u.actor->world.pos.x,dz=aim.z-u.actor->world.pos.z;
++    float distance=std::sqrt(dx*dx+dz*dz);
++    if(distance<5){u.speed=0;return;}
++    dx/=distance;dz/=distance;
++    // Small separation forces keep melee groups readable and stop bots stacking on one point.
++    for(const auto& [a,other]:units){
++        if(a==u.actor||other.native||!Alive(other)||std::fabs(a->world.pos.y-u.actor->world.pos.y)>60)continue;
++        float gap=DistanceXZ(a->world.pos,u.actor->world.pos);
++        float desired=u.radius+other.radius+8;
++        if(gap>0.1f&&gap<desired){
++            float weight=(desired-gap)/desired*0.45f;
++            dx+=(u.actor->world.pos.x-a->world.pos.x)/gap*weight;
++            dz+=(u.actor->world.pos.z-a->world.pos.z)/gap*weight;
++        }
++    }
++    float directionLength=std::sqrt(dx*dx+dz*dz);if(directionLength<0.01f)return;
++    dx/=directionLength;dz/=directionLength;
++    float travel=(std::min)(speed,distance);
++    Vec3f next{u.actor->world.pos.x+dx*travel,u.actor->world.pos.y,u.actor->world.pos.z+dz*travel};
++    int16_t yaw=static_cast<int16_t>(std::atan2(dx,dz)*32768.0f/3.14159265f);
++    Math_SmoothStepToS(&u.actor->shape.rot.y,yaw,3,0x1800,0x80);
++    u.actor->world.rot.y=u.actor->shape.rot.y;
++    if(navigation.Move(play,u.actor,next)){u.speed=travel;u.stuckTimer=0;return;}
++    // Probe both tangents before declaring a route blocked by a moving door, actor or obstacle.
++    const float signs[2]={1,-1};
++    for(float sign:signs){
++        next={u.actor->world.pos.x+(dx+dz*sign)*travel*0.70f,u.actor->world.pos.y,
++              u.actor->world.pos.z+(dz-dx*sign)*travel*0.70f};
++        if(navigation.Move(play,u.actor,next)){u.speed=travel;u.stuckTimer=(std::max)(0,u.stuckTimer-1);return;}
++    }
++    ++u.stuckTimer;u.speed=0;
++    if(u.stuckTimer%40==0){u.path.clear();if(!u.target)ChooseWander(u);}
++    // Recovery is only allowed out of view, never a visible teleport during combat.
++    if(u.stuckTimer>200&&u.combatTimer==0&&DistanceXZ(u.actor->world.pos,GET_PLAYER(play)->actor.world.pos)>1200){
++        Vec3f recovery;
++        if(navigation.SpawnPoint(play,u.seed,recovery,false,&u.home)){
++            u.actor->world.pos=recovery;u.stuckTimer=0;u.path.clear();
++        }
++    }
++}
++static void Face(Unit& u,const Vec3f& target){
++    int16_t yaw=static_cast<int16_t>(std::atan2(target.x-u.actor->world.pos.x,target.z-u.actor->world.pos.z)*32768.0f/3.14159265f);
++    Math_SmoothStepToS(&u.actor->shape.rot.y,yaw,2,0x2000,0x100);
++    u.actor->world.rot.y=u.actor->shape.rot.y;
++}
++static void BeginAttack(Unit& u){
++    u.action=Action::Attack;u.attackDuration=u.berserk?8:14;
++    u.actionTimer=u.attackDuration;u.animation=-1;u.animFrame=0;u.speed=0;
++}
++static void Strike(Unit& u,PlayState* play){
++    if(!TargetValid(u,play))return;
++    Unit* target=Find(u.target);
++    float targetRadius=target?target->radius:20;
++    float range=u.radius+targetRadius+45;
++    if(DistanceXZ(u.actor->world.pos,u.target->world.pos)>range||
++        std::fabs(u.actor->world.pos.y-u.target->world.pos.y)>u.height+40||
++        !navigation.Clear(play,u.actor->world.pos,u.target->world.pos))return;
++    if(u.target==&GET_PLAYER(play)->actor)DamagePlayer(play,u,u.bossIndex>=0?1.35f:1.0f);
++    else if(target&&!target->native)HitUnit(*target,u.actor,2);
++    // Native targets use the bot's physical AT collider, registered at the same point of this swing.
++}
++static bool InAbility(const Unit& boss,const Vec3f& pos){
++    if(DistanceXZ(pos,boss.castOrigin)>boss.castRadius||std::fabs(pos.y-boss.castOrigin.y)>170)return false;
++    if(boss.bossIndex==1){
++        float angle=std::atan2(pos.x-boss.actor->world.pos.x,pos.z-boss.actor->world.pos.z);
++        int16_t difference=static_cast<int16_t>(static_cast<int16_t>(angle*32768.0f/3.14159265f)-boss.actor->shape.rot.y);
++        return std::abs(static_cast<int>(difference))<0x3800;
++    }
++    return true;
++}
++static void BossAbility(Unit& u,PlayState* play){
++    float power=u.bossIndex==3?1.2f:2.2f;
++    if(u.enraged)power*=1.25f;
++    for(auto& [a,other]:units){
++        if(!other.bot||!Alive(other)||!InAbility(u,a->world.pos)||!navigation.Clear(play,u.castOrigin,a->world.pos))continue;
++        other.hurtTimer=0;HitUnit(other,u.actor,2,power);
++        if(u.bossIndex==3){other.action=Action::Recover;other.actionTimer=28;}
++    }
++    auto* player=GET_PLAYER(play);
++    if(InAbility(u,player->actor.world.pos)&&navigation.Clear(play,u.castOrigin,player->actor.world.pos))DamagePlayer(play,u,power);
++    AddText(u.castOrigin,u.bossIndex==0?"BONEQUAKE":u.bossIndex==1?"RENDING ARC":
++        u.bossIndex==2?"BREAKER SHOCK":u.bossIndex==3?"MOON HOWL":"CINDER ERUPTION",0xFF96BFFF);
++}
++static bool Evade(Unit& u,PlayState* play){
++    if(!u.bot)return false;
++    for(const auto& [_,boss]:units){
++        if(boss.bossIndex<0||boss.action!=Action::Cast||!Alive(boss)||!InAbility(boss,u.actor->world.pos))continue;
++        float dx=u.actor->world.pos.x-boss.castOrigin.x,dz=u.actor->world.pos.z-boss.castOrigin.z;
++        float length=std::sqrt(dx*dx+dz*dz);
++        if(length<1){dx=std::sin(u.serial*1.6f);dz=std::cos(u.serial*1.6f);length=1;}
++        Vec3f escape{boss.castOrigin.x+dx/length*(boss.castRadius+100),u.actor->world.pos.y,
++                     boss.castOrigin.z+dz/length*(boss.castRadius+100)};
++        u.action=Action::Pursue;MoveToward(u,play,escape,7.0f);return true;
++    }
++    return false;
++}
++void UpdateUnit(Unit& u,PlayState* play){
++    if(!Running(play))return;
++    if(u.action==Action::Dead||u.action==Action::Depart){
++        u.speed=0;if(--u.actionTimer<=0)Actor_Kill(u.actor);return;
++    }
++    if(u.hurtTimer>0)--u.hurtTimer;
++    if(u.cooldown>0)--u.cooldown;
++    if(u.abilityTimer>0)--u.abilityTimer;
++    if(u.combatTimer>0)--u.combatTimer;
++    if(u.thinkTimer>0)--u.thinkTimer;
++    if(!TargetValid(u,play))SetTarget(u,nullptr);
++    if(Evade(u,play))return;
++    if(u.action==Action::Cast){
++        u.speed=0;
++        if(--u.actionTimer<=0){
++            if(u.bot){Unit* ally=Find(u.target);if(ally&&Alive(*ally)&&DistanceXZ(u.actor->world.pos,ally->actor->world.pos)<500){
++                int amount=u.stats.spirit*3;ally->hp=(std::min)(float(ally->stats.maxHp),ally->hp+amount);
++                AddText(ally->actor->world.pos,"+"+std::to_string(amount),0xFFB8FF83);
++            }}else BossAbility(u,play);
++            u.action=Action::Recover;u.actionTimer=u.bot?8:18;u.cooldown=25;u.abilityTimer=u.bot?120:(u.enraged?130:200);
++            SetTarget(u,nullptr);
++        }
++        return;
++    }
++    if(u.action==Action::Attack){
++        u.speed=0;if(TargetValid(u,play))Face(u,u.target->world.pos);
++        if(--u.actionTimer==u.attackDuration/2)Strike(u,play);
++        if(u.actionTimer<=0){u.action=Action::Recover;u.actionTimer=u.berserk?3:7;
++            u.cooldown=u.berserk?7:u.enraged?10:u.bot&&u.role==Role::Skirmisher?15:22;}
++        return;
++    }
++    if(u.action==Action::Recover&&u.actionTimer>0){u.speed=0;--u.actionTimer;return;}
++    if(u.hp<u.stats.maxHp&&u.combatTimer==0)u.hp=(std::min)(float(u.stats.maxHp),u.hp+u.stats.maxHp*0.035f/SimHz);
++    if(u.bossIndex>=0&&!u.enraged&&u.hp<u.stats.maxHp*0.30f){
++        u.enraged=true;AddText(u.actor->world.pos,"ENRAGED",0xFF8585FF);
++    }
++    if(u.bossIndex>=0&&u.target&&u.abilityTimer==0){
++        u.action=Action::Cast;u.castDuration=u.enraged?32:46;u.actionTimer=u.castDuration;
++        u.castOrigin=u.bossIndex==4?u.target->world.pos:u.actor->world.pos;
++        u.castRadius=u.bossIndex==3?570:u.bossIndex==4?330:440;
++        u.animation=-1;u.animFrame=0;u.speed=0;return;
++    }
++    if(u.bot&&u.role==Role::Mender&&u.abilityTimer==0){
++        Unit* wounded=nullptr;float ratio=0.70f;
++        for(auto& [a,ally]:units)if(ally.bot&&Alive(ally)&&DistanceXZ(u.actor->world.pos,a->world.pos)<400&&
++            ally.hp/ally.stats.maxHp<ratio&&navigation.Clear(play,u.actor->world.pos,a->world.pos)){
++            ratio=ally.hp/ally.stats.maxHp;wounded=&ally;
++        }
++        if(wounded){SetTarget(u,wounded->actor);u.action=Action::Cast;u.castDuration=u.actionTimer=24;u.animation=-1;return;}
++        u.abilityTimer=20;
++    }
++    if(u.thinkTimer<=0){
++        u.thinkTimer=16+static_cast<int>(NextRandom(u.seed)%9);
++        if(u.action!=Action::Depart)ChooseTarget(u,play);
++        if(u.action==Action::Depart)return;
++        if(!u.target&&(DistanceXZ(u.actor->world.pos,u.goal)<65||u.path.empty()))ChooseWander(u);
++    }
++    if(u.target){
++        float leash=u.bossIndex>=0?1600.0f:u.bot?6000.0f:1200.0f;
++        if(DistanceXZ(u.actor->world.pos,u.home)>leash){SetTarget(u,nullptr);u.goal=u.home;u.action=Action::Roam;}
++        else{
++            u.combatTimer=12*SimHz;
++            Unit* other=Find(u.target);float range=u.radius+(other?other->radius:20)+27;
++            if(DistanceXZ(u.actor->world.pos,u.target->world.pos)<range&&navigation.Clear(play,u.actor->world.pos,u.target->world.pos)){
++                Face(u,u.target->world.pos);u.speed=0;u.action=Action::Pursue;
++                if(u.cooldown==0)BeginAttack(u);return;
++            }
++            u.action=Action::Pursue;
++            Vec3f approach=u.target->world.pos;
++            // Raid positions are distributed around the target's hit cylinder, not its centre.
++            if(u.raid&&other&&other->bossIndex>=0){
++                float angle=u.serial*2.39996323f;float orbit=other->radius+18;
++                approach.x+=std::sin(angle)*orbit;approach.z+=std::cos(angle)*orbit;
++            }
++            float speed=u.bot?(u.raid?5.0f:4.3f):u.berserk?7.5f:u.enraged?4.7f:3.2f;
++            MoveToward(u,play,approach,speed);return;
++        }
++    }
++    u.action=Action::Roam;
++    if(DistanceXZ(u.actor->world.pos,u.goal)>35)MoveToward(u,play,u.goal,u.bot?2.8f:u.berserk?4.8f:1.7f);
++    else{u.speed=0;u.action=Action::Recover;u.actionTimer=15+static_cast<int>(NextRandom(u.seed)%45);}
++}
++} // namespace Nxt
+--- /dev/null
++++ b/soh/soh/Enhancements/NxtRpg/NxtConfig.h
+@@ -0,0 +1,13 @@
++#pragma once
++#include "NxtWorld.h"
++namespace Nxt {
++// Narrow configuration boundary keeps simulation independent of UI / JSON / logging libraries.
++int ConfigInt(const char* name,int fallback);
++float ConfigFloat(const char* name,float fallback);
++void ReadOptions();
++void Tick();
++void OnHealthChange(int16_t amount);
++void OnGameLoaded();
++void OnWorldDestroyed();
++void TrackNative(Actor* actor);
++}
+--- /dev/null
++++ b/soh/soh/Enhancements/NxtRpg/NxtGui.cpp
+@@ -0,0 +1,307 @@
++#include "NxtWorld.h"
++#include "NxtGui.h"
++#include "NxtNavigation.h"
++#include <fast/Fast3dGui.h>
++#include <ship/Context.h>
++#include <libultraship/bridge/consolevariablebridge.h>
++#include <algorithm>
++#include <cmath>
++#include <cstdio>
++#include <memory>
++
++extern "C" { extern PlayState* gPlayState; }
++namespace Nxt {
++static std::shared_ptr<Ship::GuiWindow> settingsWindow;
++static constexpr ImU32 Ink=IM_COL32(12,18,29,220),Border=IM_COL32(99,135,159,165);
++static constexpr ImU32 White=IM_COL32(239,242,247,255),Muted=IM_COL32(172,189,207,255);
++static constexpr ImU32 Gold=IM_COL32(242,197,102,255),Teal=IM_COL32(93,218,185,255),Red=IM_COL32(244,99,102,255);
++static bool dirty=false;
++static void Tip(const char* text) { if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",text); }
++static void Toggle(const char* label,const char* cvar,bool value,const char* tip=nullptr) {
++    bool selected=CVarGetInteger(cvar,value?1:0)!=0;
++    if(ImGui::Checkbox(label,&selected)){CVarSetInteger(cvar,selected);dirty=true;}
++    if(tip)Tip(tip);
++}
++static void Integer(const char* label,const char* cvar,int value,int lo,int hi,const char* tip=nullptr) {
++    int selected=Clamp(CVarGetInteger(cvar,value),lo,hi);
++    if(ImGui::SliderInt(label,&selected,lo,hi)){CVarSetInteger(cvar,selected);dirty=true;}
++    if(tip)Tip(tip);
++}
++static void Real(const char* label,const char* cvar,float value,float lo,float hi,const char* format="%.2f") {
++    float selected=CVarGetFloat(cvar,value);if(!std::isfinite(selected))selected=value;selected=Clamp(selected,lo,hi);
++    if(ImGui::SliderFloat(label,&selected,lo,hi,format)){CVarSetFloat(cvar,selected);dirty=true;}
++}
++static void Section(const char* text) { ImGui::Spacing();ImGui::SeparatorText(text); }
++static void Preset(int bots,int enemies,int raid) {
++    CVarSetInteger(NXT_CVAR("BotCount"),bots);CVarSetInteger(NXT_CVAR("EnemyCap"),enemies);
++    CVarSetInteger(NXT_CVAR("RaidSize"),raid);CVarSetInteger(NXT_CVAR("RaidCap"),raid*3);
++    dirty=true;
++}
++class SettingsWindow final:public Ship::GuiWindow {
++public:
++    SettingsWindow():GuiWindow(NXT_CVAR("SettingsWindow"),"Ocarina of Time NXT | RPG control panel",ImVec2(760,650)){}
++    void InitElement()override{}
++    void UpdateElement()override{}
++    void DrawElement()override {
++        ImGui::TextColored(ImVec4(0.95f,0.78f,0.4f,1),"OCARINA OF TIME NXT");
++        ImGui::TextDisabled("Single-player living-world RPG");
++        Toggle("Enable NXT framework",NXT_CVAR("Enabled"),true,"Disable to remove NXT actors and stop all NXT combat/progression. Original story actors are not deleted.");
++        ImGui::SameLine();ImGui::TextDisabled("Progress is stored in the current game save.");
++        if(ImGui::BeginTabBar("NxtTabs")){
++            if(ImGui::BeginTabItem("Character")){
++                const Stats stats=CurrentPlayerStats();const auto& save=gSaveContext.ship.nxt;
++                Section("Your adventurer");
++                if(gPlayState&&gSaveContext.gameMode==GAMEMODE_NORMAL){
++                    ImGui::Text("LEVEL %d / %d",stats.level,MaxLevel);
++                    char progress[80];std::snprintf(progress,sizeof(progress),"%u / %u XP",save.xp,XpRequired(stats.level));
++                    ImGui::ProgressBar(stats.level==MaxLevel?1.0f:float(save.xp)/(std::max)(1U,XpRequired(stats.level)),ImVec2(-1,22),stats.level==MaxLevel?"MAX LEVEL":progress);
++                    if(ImGui::BeginTable("Stats",2,ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerH)){
++                        const char* names[]={"Maximum HP","Attack","Defense","Spirit","Agility","Critical chance"};
++                        for(int i=0;i<6;++i){
++                            ImGui::TableNextRow();ImGui::TableNextColumn();ImGui::TextUnformatted(names[i]);ImGui::TableNextColumn();
++                            if(i==5)ImGui::Text("%.1f%%",stats.crit*100);
++                            else {const int values[]={stats.maxHp,stats.attack,stats.defense,stats.spirit,stats.agility};ImGui::Text("%d",values[i]);}
++                        }ImGui::EndTable();
++                    }
++                    ImGui::Text("Credited victories: %u     World boss victories: %u",save.kills,save.bossKills);
++                }else ImGui::TextWrapped("Load a game to view your adventurer. Existing saves begin at level 1; no story progress is reset.");
++                Section("Progression");
++                Toggle("Player levels and RPG damage",NXT_CVAR("Rpg"),true);
++                Toggle("Scale original combat enemies",NXT_CVAR("ScaleNative"),true,"Adds RPG health and damage to ordinary original enemies. Story bosses retain their original mechanics.");
++                Toggle("Share nearby bot kill XP",NXT_CVAR("ShareXp"),true,"A nearby untagged bot victory grants 35% XP. Participating grants full XP; no party is required.");
++                Real("Experience multiplier",NXT_CVAR("XpRate"),1,0.1f,10,"%.2fx");
++                Real("Incoming damage multiplier",NXT_CVAR("DamageRate"),1,0.25f,4,"%.2fx");
++                Integer("Enemy / bot level variation",NXT_CVAR("LevelSpread"),3,0,10);
++                Section("Recovery");
++                Toggle("Regenerate player health",NXT_CVAR("Regen"),true);
++                Integer("Out-of-combat delay (seconds)",NXT_CVAR("RegenDelay"),7,0,30);
++                Real("Base health restored per second",NXT_CVAR("RegenPercent"),3,0.25f,15,"%.2f%%");
++                ImGui::TextWrapped("Hearts remain the authoritative health meter. RPG HP is mapped to that meter, preserving heart containers, healing items and normal saves. Leveling fully restores health.");
++                ImGui::EndTabItem();
++            }
++            if(ImGui::BeginTabItem("Population")){
++                Section("Adventurers");
++                Toggle("Roaming adventurers",NXT_CVAR("Bots"),true);
++                Integer("Outdoor / combat-map bots",NXT_CVAR("BotCount"),30,0,50);
++                Integer("Safe interior bots",NXT_CVAR("IndoorCount"),10,0,50);
++                Real("Adventurer attack strength",NXT_CVAR("BotPower"),1,0.25f,3,"%.2fx");
++                if(gPlayState&&SceneEnabled(gPlayState->sceneNum)){
++                    const std::string key="gNxt.Scene."+std::to_string(gPlayState->sceneNum)+".Bots";
++                    Integer("Current map bot override (-1 = inherit)",key.c_str(),-1,-1,50);
++                    ImGui::Text("Scene %d / room %d: %s",gPlayState->sceneNum,gPlayState->roomCtx.curRoom.num,SceneKind(gPlayState->sceneNum));
++                    ImGui::Text("Current targets: %d adventurers / %d added enemies",DesiredBots(gPlayState->sceneNum),DesiredEnemies(gPlayState->sceneNum));
++                }
++                Section("Additional encounters");
++                Toggle("Added combat enemies",NXT_CVAR("Enemies"),true);
++                Integer("Added enemies per adventurer",NXT_CVAR("EnemyRatio"),2,0,4);
++                Integer("Maximum added regular enemies",NXT_CVAR("EnemyCap"),90,0,120);
++                Integer("Enemy respawn delay (seconds)",NXT_CVAR("EnemyRespawn"),35,5,300);
++                Integer("Berserker spawn chance",NXT_CVAR("BerserkChance"),20,0,100,"Applies when additional enemies spawn. Berserkers have faster AI/animation, more health and attack, and red-orange particles.");
++                ImGui::TextWrapped("Settlements and houses never receive added enemies. Original scene actors remain untouched. Populations are simulated in the loaded scene, not in unloaded maps.");
++                Section("Population presets");
++                if(ImGui::Button("Light"))Preset(15,35,8);ImGui::SameLine();
++                if(ImGui::Button("Balanced"))Preset(30,90,12);ImGui::SameLine();
++                if(ImGui::Button("Crowded"))Preset(50,110,16);
++                Tip("The shared NXT safety budget is 220 tracked actors. Spawn targets can be lower when there is not enough safe terrain.");
++                ImGui::EndTabItem();
++            }
++            if(ImGui::BeginTabItem("World bosses")){
++                Section("Hyrule Field encounters");
++                Toggle("Five world bosses",NXT_CVAR("WorldBosses"),true);
++                Integer("Reinforcements per engaged boss",NXT_CVAR("RaidSize"),12,0,24);
++                Integer("Total reinforcement budget",NXT_CVAR("RaidCap"),36,0,48);
++                Integer("Boss health duration target (seconds)",NXT_CVAR("BossDuration"),300,60,900);
++                Real("Boss health multiplier",NXT_CVAR("BossHpRate"),1,0.25f,5,"%.2fx");
++                Integer("Boss respawn (active-play minutes)",NXT_CVAR("BossRespawn"),20,2,120);
++                ImGui::TextWrapped("Raid helpers use a separate population. They arrive when you approach an encounter and depart afterward. Regular adventurers continue their patrols. Duration is a health-budget estimate, not a guaranteed kill time. Boss health settings apply at spawn or out-of-combat rescaling.");
++                Section("Field roster");
++                for(int i=0;i<BossCount;++i){
++                    const auto& boss=bossViews[i];
++                    ImGui::Text("%s",BossName(i));
++                    if(boss.alive){
++                        char line[96];std::snprintf(line,sizeof(line),"Lv %d | %.0f / %.0f HP | %d raiders",boss.level,boss.hp,boss.maxHp,boss.raiders);
++                        ImGui::ProgressBar(Clamp(boss.hp/boss.maxHp,0.0f,1.0f),ImVec2(-1,18),line);
++                    }else {
++                        const uint32_t cooldown=gSaveContext.ship.nxt.bossCooldown[i];
++                        if(cooldown)ImGui::TextDisabled("Respawn in %u:%02u active-play minutes",cooldown/60,cooldown%60);
++                        else ImGui::TextDisabled("Ready - spawns on surveyed, reachable Hyrule Field terrain");
++                    }
++                }
++                ImGui::EndTabItem();
++            }
++            if(ImGui::BeginTabItem("Display")){
++                Section("HUD");
++                Toggle("Player level / health / XP HUD",NXT_CVAR("Hud"),true);
++                Toggle("World nameplates",NXT_CVAR("Nameplates"),true);
++                Toggle("Friendly nameplates",NXT_CVAR("FriendlyPlates"),true);
++                Toggle("Floating combat numbers",NXT_CVAR("CombatText"),true);
++                Toggle("Boss encounter panel",NXT_CVAR("BossHud"),true);
++                Integer("Maximum visible nameplates",NXT_CVAR("PlateLimit"),24,4,64);
++                Integer("Nameplate view distance",NXT_CVAR("PlateDistance"),1500,300,4000);
++                Real("HUD scale",NXT_CVAR("HudScale"),1,0.65f,1.6f,"%.2fx");
++                Real("HUD vertical offset",NXT_CVAR("HudOffset"),24,0,160,"%.0f px");
++                ImGui::TextWrapped("Nameplates are distance-limited, wall-occluded and de-overlapped. Targeted enemies have priority. Raid casts show ground warning rings and a countdown bar.");
++                ImGui::EndTabItem();
++            }
++            if(ImGui::BeginTabItem("Diagnostics")){
++                Section("Loaded scene");
++                ImGui::TextWrapped("%s",Status().c_str());
++                ImGui::Text("Adventurers %d | Additional enemies %d | Raid helpers %d",LivingCount(true),LivingCount(false),LivingCount(true,true));
++                ImGui::Text("Tracked actors %zu / %d | Navigation nodes %zu (%d connected)",units.size(),MaxPopulation,navigation.nodes.size(),navigation.ReachableCount());
++                ImGui::TextWrapped("Repopulation retires NXT actors and rebuilds navigation. It does not erase levels, reset original enemies or bypass saved world-boss cooldowns.");
++                if(ImGui::Button("Repopulate current scene"))RequestRepopulate();
++                Section("Operational limits");
++                ImGui::TextWrapped("Bots use ground navigation: they do not swim, climb ladders, enter crawlspaces or solve puzzles. Scripted cinematics and story-boss arenas are protected. Small rooms may fit fewer bots than requested. All simulation pauses during menus, dialogue and transitions.");
++                ImGui::TextWrapped("This is a source implementation, not a multiplayer network server. NXT actor rendering, every scene and large-population performance require in-game testing on your build.");
++                ImGui::EndTabItem();
++            }
++            ImGui::EndTabBar();
++        }
++        // Do not write the config on every slider tick; commit after the interaction ends.
++        if(dirty&&!ImGui::IsAnyItemActive()){CVarSave();dirty=false;}
++    }
++};
++struct View { ImVec2 pos,size;float aspect=4.0f/3.0f; };
++static bool Project(PlayState* play,const View& view,Vec3f pos,ImVec2& result) {
++    Vec3f clip{};float w=0;
++    SkinMatrix_Vec3fMtxFMultXYZW(&play->viewProjectionMtxF,&pos,&clip,&w);
++    if(!std::isfinite(w)||w<1.0f)return false;
++    float nx=clip.x/w*(4.0f/3.0f)/view.aspect,ny=clip.y/w;
++    if(!std::isfinite(nx)||!std::isfinite(ny)||nx<-1.05f||nx>1.05f||ny<-1.05f||ny>1.05f)return false;
++    result={view.pos.x+(nx+1)*view.size.x*0.5f,view.pos.y+(1-ny)*view.size.y*0.5f};return true;
++}
++static void Text(ImDrawList* draw,ImVec2 pos,ImU32 color,const std::string& text,float size) {
++    draw->AddText(ImGui::GetFont(),size,ImVec2(pos.x+1,pos.y+1),IM_COL32(0,0,0,230),text.c_str());
++    draw->AddText(ImGui::GetFont(),size,pos,color,text.c_str());
++}
++static void Panel(ImDrawList* draw,ImVec2 p,ImVec2 size,ImU32 border=Border) {
++    draw->AddRectFilled(p,ImVec2(p.x+size.x,p.y+size.y),Ink,6);
++    draw->AddRect(p,ImVec2(p.x+size.x,p.y+size.y),border,6);
++}
++static void Bar(ImDrawList* draw,ImVec2 p,float width,float height,float fraction,ImU32 color) {
++    fraction=Clamp(fraction,0.0f,1.0f);
++    draw->AddRectFilled(p,ImVec2(p.x+width,p.y+height),IM_COL32(33,43,58,240),3);
++    if(fraction>0)draw->AddRectFilled(p,ImVec2(p.x+width*fraction,p.y+height),color,3);
++}
++static void PlayerHud(ImDrawList* draw,const View& view,float scale) {
++    if(!options.hud)return;
++    const Stats stats=CurrentPlayerStats();const auto& save=gSaveContext.ship.nxt;
++    const float width=(std::min)(360*scale,view.size.x-24),height=84*scale;
++    float offset=Clamp(CVarGetFloat(NXT_CVAR("HudOffset"),24),0.0f,160.0f);
++    ImVec2 p{view.pos.x+(view.size.x-width)*0.5f,view.pos.y+view.size.y-height-offset};
++    Panel(draw,p,ImVec2(width,height));
++    Text(draw,{p.x+12*scale,p.y+8*scale},Gold,"NXT  /  LEVEL "+std::to_string(stats.level),15*scale);
++    float health=Clamp(float(gSaveContext.health)/(std::max)(1,int(gSaveContext.healthCapacity)),0.0f,1.0f);
++    char hp[80];std::snprintf(hp,sizeof(hp),"HP %d / %d",int(std::ceil(stats.maxHp*health)),stats.maxHp);
++    Text(draw,{p.x+width-145*scale,p.y+8*scale},White,hp,13*scale);
++    Bar(draw,{p.x+12*scale,p.y+31*scale},width-24*scale,8*scale,health,health<0.25f?Red:Teal);
++    float xp=stats.level==MaxLevel?1:float(save.xp)/(std::max)(1U,XpRequired(stats.level));
++    Bar(draw,{p.x+12*scale,p.y+48*scale},width-24*scale,5*scale,xp,Gold);
++    std::string line=stats.level==MaxLevel?"MAX LEVEL":"XP "+std::to_string(save.xp)+" / "+std::to_string(XpRequired(stats.level));
++    Text(draw,{p.x+12*scale,p.y+60*scale},Muted,line,12*scale);
++    Text(draw,{p.x+width-142*scale,p.y+60*scale},Muted,std::to_string(LivingCount(true))+" adventurers",12*scale);
++}
++static void Plates(ImDrawList* draw,PlayState* play,const View& view,float scale) {
++    if(!options.plates)return;
++    struct Candidate {Unit* unit;float priority;ImVec2 anchor;};std::vector<Candidate> candidates;
++    Actor* focused=GET_PLAYER(play)->focusActor;
++    for(auto& [actor,u]:units){
++        if(!Alive(u)||!u.visible||(u.bot&&!options.friendlyPlates))continue;
++        const float distance=DistanceXZ(actor->world.pos,GET_PLAYER(play)->actor.world.pos);
++        if(distance>options.plateDistance)continue;
++        Vec3f world=actor->world.pos;world.y+=u.height+16;ImVec2 anchor;
++        if(!Project(play,view,world,anchor))continue;
++        candidates.push_back({&u,distance-(actor==focused?10000.0f:0)-(u.bossIndex>=0?2000.0f:0),anchor});
++    }
++    std::sort(candidates.begin(),candidates.end(),[](const Candidate& a,const Candidate& b){return a.priority<b.priority;});
++    std::vector<ImRect> occupied;int shown=0;
++    for(auto& candidate:candidates){
++        if(shown>=options.plateLimit)break;
++        Unit& u=*candidate.unit;const bool target=u.actor==focused;
++        const float width=(u.bossIndex>=0?250.0f:186.0f)*scale,height=54*scale;
++        ImVec2 p{candidate.anchor.x-width/2,candidate.anchor.y-height};bool placed=false;
++        for(int attempt=0;attempt<4;++attempt){
++            ImRect rect(p,ImVec2(p.x+width,p.y+height));bool collision=false;
++            for(const auto& used:occupied)if(rect.Overlaps(used)){collision=true;break;}
++            if(!collision&&p.y>=view.pos.y&&p.x>=view.pos.x&&p.x+width<=view.pos.x+view.size.x){occupied.push_back(rect);placed=true;break;}
++            p.y-=height+3*scale;
++        }
++        if(!placed)continue;++shown;
++        ImU32 accent=u.bot?Teal:u.bossIndex>=0?Gold:u.berserk?IM_COL32(255,126,50,255):Red;
++        Panel(draw,p,ImVec2(width,height),target?Gold:Border);
++        if(p.y+height<candidate.anchor.y-4)draw->AddLine({p.x+width/2,p.y+height},candidate.anchor,Border);
++        std::string name="Lv "+std::to_string(u.stats.level)+"  "+u.name;
++        float fontSize=12*scale;
++        while(fontSize>9*scale&&ImGui::GetFont()->CalcTextSizeA(fontSize,10000,0,name.c_str()).x>width-12*scale)fontSize-=0.5f;
++        Text(draw,{p.x+6*scale,p.y+5*scale},White,name,fontSize);
++        std::string detail=u.bot?RoleName(u.role):u.enraged?"ENRAGED":u.berserk?"BERSERKER":u.bossIndex>=0?"WORLD BOSS":"HOSTILE";
++        detail+="  /  ";detail+=ActionName(u.action);
++        Text(draw,{p.x+6*scale,p.y+21*scale},accent,detail,10*scale);
++        Bar(draw,{p.x+6*scale,p.y+38*scale},width-12*scale,9*scale,u.displayHp/u.stats.maxHp,accent);
++        char health[64];std::snprintf(health,sizeof(health),"%.0f / %d",(std::max)(0.0f,u.hp),u.stats.maxHp);
++        const float textWidth=ImGui::GetFont()->CalcTextSizeA(9*scale,10000,0,health).x;
++        Text(draw,{p.x+(width-textWidth)/2,p.y+37*scale},White,health,9*scale);
++    }
++}
++static void BossHud(ImDrawList* draw,PlayState* play,const View& view,float scale) {
++    if(!CVarGetInteger(NXT_CVAR("BossHud"),1))return;
++    Unit* closest=nullptr;float nearest=2600;
++    for(auto& [actor,u]:units)if(u.bossIndex>=0&&Alive(u)){
++        float distance=DistanceXZ(actor->world.pos,GET_PLAYER(play)->actor.world.pos);
++        if(distance<nearest){nearest=distance;closest=&u;}
++    }
++    if(!closest)return;const Unit& boss=*closest;
++    float width=(std::min)(440*scale,view.size.x-28);ImVec2 p{view.pos.x+(view.size.x-width)/2,view.pos.y+22*scale};
++    Panel(draw,p,ImVec2(width,76*scale),Gold);
++    Text(draw,{p.x+12*scale,p.y+8*scale},Gold,"WORLD BOSS  /  LEVEL "+std::to_string(boss.stats.level),11*scale);
++    Text(draw,{p.x+12*scale,p.y+24*scale},White,boss.name,15*scale);
++    Bar(draw,{p.x+12*scale,p.y+48*scale},width-24*scale,10*scale,boss.displayHp/boss.stats.maxHp,Red);
++    char line[128];std::snprintf(line,sizeof(line),"%.0f / %d HP   |   %d raid allies%s",boss.hp,boss.stats.maxHp,
++        bossViews[boss.bossIndex].raiders,boss.enraged?"   |   ENRAGED":"");
++    Text(draw,{p.x+12*scale,p.y+62*scale},Muted,line,10*scale);
++    if(boss.action==Action::Cast){
++        const char* names[]={"BONEQUAKE - MOVE OUT","RENDING ARC - GET BEHIND","BREAKER SHOCK - MOVE OUT","MOON HOWL - RETREAT","CINDER ERUPTION - LEAVE THE RING"};
++        Panel(draw,{p.x,p.y+82*scale},ImVec2(width,41*scale),Red);
++        Text(draw,{p.x+10*scale,p.y+89*scale},Gold,names[boss.bossIndex],12*scale);
++        Bar(draw,{p.x+10*scale,p.y+110*scale},width-20*scale,5*scale,1-float(boss.actionTimer)/(std::max)(1,boss.castDuration),Gold);
++    }
++}
++class HudWindow final:public Ship::GuiWindow {
++public:
++    HudWindow():GuiWindow("",true,"NXT world overlay"){}
++    void InitElement()override{}
++    void UpdateElement()override{}
++    void DrawElement()override{}
++    void Draw()override {
++        if(!gPlayState||!Running(gPlayState))return;
++        auto* context=Ship::Context::GetRawInstance();if(!context)return;
++        auto gui=std::dynamic_pointer_cast<Fast::Fast3dGui>(context->GetWindow()->GetGui());if(!gui)return;
++        View view{gui->GetGameImagePosition(),gui->GetGameImageSize(),gui->GetGameImageAspect()};
++        if(view.size.x<100||view.size.y<100||view.aspect<=0)return;
++        float scale=CVarGetFloat(NXT_CVAR("HudScale"),1);if(!std::isfinite(scale))scale=1;
++        scale=Clamp(scale,0.65f,1.6f)*(std::min)(1.0f,view.size.y/600.0f);
++        // The Main Game draw list keeps HUD below interactive control windows rather than covering them.
++        ImGuiWindow* game=ImGui::FindWindowByName("Main Game");if(!game)return;
++        ImDrawList* draw=game->DrawList;
++        draw->PushClipRect(view.pos,ImVec2(view.pos.x+view.size.x,view.pos.y+view.size.y),true);
++        Plates(draw,gPlayState,view,scale);
++        if(CVarGetInteger(NXT_CVAR("CombatText"),1))for(const auto& text:combatText){
++            Vec3f world=text.pos;world.y+=70;ImVec2 p;if(!Project(gPlayState,view,world,p))continue;
++            uint32_t alpha=static_cast<uint32_t>(255*Clamp(text.life/12.0f,0.0f,1.0f));
++            Text(draw,p,(text.color&0x00FFFFFF)|(alpha<<24),text.text,15*scale);
++        }
++        PlayerHud(draw,view,scale);BossHud(draw,gPlayState,view,scale);
++        draw->PopClipRect();
++    }
++};
++void OpenSettings(){if(settingsWindow)settingsWindow->Show();}
++void RegisterGui(){
++    auto* context=Ship::Context::GetRawInstance();if(!context||!context->GetWindow()||!context->GetWindow()->GetGui())return;
++    settingsWindow=std::make_shared<SettingsWindow>();
++    context->GetWindow()->GetGui()->AddGuiWindow(settingsWindow);
++    if(auto fast=std::dynamic_pointer_cast<Fast::Fast3dGui>(context->GetWindow()->GetGui())){
++        auto overlay=std::make_shared<HudWindow>();
++        fast->AddGameImageOverlay([overlay](){overlay->Draw();});
++    }
++}
++} // namespace Nxt
+--- /dev/null
++++ b/soh/soh/Enhancements/NxtRpg/NxtGui.h
+@@ -0,0 +1,2 @@
++#pragma once
++namespace Nxt { void OpenSettings(); void RegisterGui(); }
+--- /dev/null
++++ b/soh/soh/Enhancements/NxtRpg/NxtIntegration.cpp
+@@ -0,0 +1,43 @@
++#include "NxtWorld.h"
++#include "NxtConfig.h"
++#include "soh/ShipInit.hpp"
++#include "soh/SaveManager.h"
++#include "soh/Enhancements/game-interactor/GameInteractor.h"
++#include <libultraship/bridge/consolevariablebridge.h>
++#include <cstring>
++namespace Nxt {
++int ConfigInt(const char* name,int fallback){return CVarGetInteger(name,fallback);}
++float ConfigFloat(const char* name,float fallback){return CVarGetFloat(name,fallback);}
++static void InitializeSave(bool){std::memset(&gSaveContext.ship.nxt,0,sizeof(gSaveContext.ship.nxt));gSaveContext.ship.nxt.level=1;}
++static void LoadSave(){
++    auto& s=gSaveContext.ship.nxt;auto* manager=SaveManager::Instance;
++    manager->LoadData("level",s.level,uint32_t{1});manager->LoadData("xp",s.xp,uint32_t{0});
++    manager->LoadData("kills",s.kills,uint32_t{0});manager->LoadData("bossKills",s.bossKills,uint32_t{0});
++    manager->LoadArray("bossCooldown",BossCount,[&](size_t i){manager->LoadData("",s.bossCooldown[i],uint32_t{0});
++        s.bossCooldown[i]=Clamp(s.bossCooldown[i],0U,7200U);});
++    s.level=Clamp(s.level,1U,static_cast<uint32_t>(MaxLevel));
++    s.xp=s.level==MaxLevel?0:Clamp(s.xp,0U,XpRequired(s.level)-1);
++}
++static void SaveProgress(const SaveContext& snapshot,int,bool){
++    const auto& s=snapshot.ship.nxt;auto* manager=SaveManager::Instance;
++    manager->SaveData("level",s.level);manager->SaveData("xp",s.xp);manager->SaveData("kills",s.kills);
++    manager->SaveData("bossKills",s.bossKills);
++    manager->SaveArray("bossCooldown",BossCount,[&](size_t i){manager->SaveData("",s.bossCooldown[i]);});
++}
++static void Register(){
++    static bool registered=false;if(registered)return;registered=true;
++    ReadOptions();InitActors();RegisterGui();
++    SaveManager::Instance->AddInitFunction(InitializeSave);
++    SaveManager::Instance->AddLoadFunction("nxtRpg",1,LoadSave);
++    SaveManager::Instance->AddSaveFunction("nxtRpg",1,SaveProgress,true,SECTION_PARENT_NONE);
++    auto* gi=GameInteractor::Instance;
++    gi->RegisterGameHook<GameInteractor::OnGameFrameUpdate>(Tick);
++    gi->RegisterGameHook<GameInteractor::OnActorInit>([](void* a){TrackNative(static_cast<Actor*>(a));});
++    gi->RegisterGameHook<GameInteractor::OnActorDestroy>([](void* a){RemoveUnit(static_cast<Actor*>(a));});
++    gi->RegisterGameHook<GameInteractor::OnEnemyDefeat>([](void* a){if(Unit* u=Find(static_cast<Actor*>(a)))Award(*u);});
++    gi->RegisterGameHook<GameInteractor::OnPlayerHealthChange>(OnHealthChange);
++    gi->RegisterGameHook<GameInteractor::OnLoadGame>([](int32_t){OnGameLoaded();});
++    gi->RegisterGameHook<GameInteractor::OnPlayDestroy>(OnWorldDestroyed);
++}
++static RegisterShipInitFunc registerNxt(Register);
++} // namespace Nxt
+--- /dev/null
++++ b/soh/soh/Enhancements/NxtRpg/NxtNavigation.cpp
+@@ -0,0 +1,224 @@
++#include "NxtNavigation.h"
++#include <algorithm>
++#include <cmath>
++#include <limits>
++#include <queue>
++namespace Nxt {
++Navigation navigation;
++static float LengthSq(const Vec3f& a, const Vec3f& b) {
++    float x = a.x-b.x, y = a.y-b.y, z = a.z-b.z;
++    return x*x + y*y + z*z;
++}
++void Navigation::Reset() {
++    nodes.clear(); candidates.clear(); sampleCursor = edgeCursor = 0; built = false;
++}
++bool Navigation::Ground(PlayState* play, Vec3f& pos, float step, float drop) const {
++    if (!play || !play->colCtx.colHeader) return false;
++    Vec3f query = pos; query.y += step;
++    CollisionPoly* poly = nullptr; int bgId = BGCHECK_SCENE;
++    float height = BgCheck_EntityRaycastFloor3(&play->colCtx, &poly, &bgId, &query);
++    if (!poly || !std::isfinite(height) || height <= BGCHECK_Y_MIN + 1 ||
++        height - pos.y > step || pos.y - height > drop || poly->normal.y < 23000) return false;
++    if (SurfaceType_IsIgnoredByEntities(&play->colCtx, poly, bgId) ||
++        SurfaceType_GetSceneExitIndex(&play->colCtx, poly, bgId) != 0 ||
++        SurfaceType_IsWallDamage(&play->colCtx, poly, bgId) ||
++        SurfaceType_GetFloorEffect(&play->colCtx, poly, bgId) == FLOOR_EFFECT_2) return false;
++    const uint32_t property = func_80041EA4(&play->colCtx, poly, bgId);
++    if (property == FLOOR_PROPERTY_5 || property == FLOOR_PROPERTY_12) return false;
++    WaterBox* water = nullptr; float waterY = height;
++    if (WaterBox_GetSurface1(play, &play->colCtx, pos.x, pos.z, &waterY, &water) && waterY > height + 12) return false;
++    pos.y = height + 1.0f;
++    // Standing room, not roofs with low ceilings or crawl tunnels.
++    Vec3f top = pos; top.y += 58;
++    return Clear(play, pos, top, 3.0f);
++}
++bool Navigation::Clear(PlayState* play, const Vec3f& a, const Vec3f& b, float height) const {
++    Vec3f from = a, to = b, hit{}; from.y += height; to.y += height;
++    CollisionPoly* poly = nullptr; int bgId = BGCHECK_SCENE;
++    return !BgCheck_EntityLineTest1(&play->colCtx, &from, &to, &hit, &poly, true, true, true, true, &bgId);
++}
++bool Navigation::Walkable(PlayState* play, const Vec3f& a, const Vec3f& b) const {
++    if (std::fabs(a.y-b.y) > DistanceXZ(a,b) * 0.7f + 35 || !Clear(play,a,b)) return false;
++    const int steps = Clamp(static_cast<int>(std::ceil(DistanceXZ(a,b)/42.0f)), 1, 40);
++    Vec3f previous = a;
++    for (int i=1; i<=steps; ++i) {
++        float t = static_cast<float>(i)/steps;
++        Vec3f next{a.x+(b.x-a.x)*t, previous.y, a.z+(b.z-a.z)*t};
++        if (!Ground(play,next,36,48)) return false;
++        previous = next;
++    }
++    return std::fabs(previous.y-b.y) < 40;
++}
++void Navigation::Begin(PlayState* play) {
++    Reset();
++    const CollisionHeader* header = play->colCtx.colHeader;
++    if (!header || !header->vtxList || !header->polyList) { built=true; return; }
++    uint32_t seed = 0x27D4EB2DU ^ (static_cast<uint32_t>(play->sceneNum)<<8) ^ (play->roomCtx.curRoom.num+1);
++    const float span = (std::max)(header->maxBounds.x-header->minBounds.x, header->maxBounds.z-header->minBounds.z);
++    edgeRange = Clamp(span / 17.0f, 200.0f, 1600.0f);
++    // Stratified reservoir sampling is independent of polygon ordering and bounds the build work.
++    size_t seen = 0;
++    constexpr size_t candidateLimit = 1500;
++    for (size_t i=0; i<header->numPolygons; ++i) {
++        const auto& poly=header->polyList[i];
++        if (poly.normal.y < 23000) continue;
++        const auto& a=header->vtxList[COLPOLY_VTX_INDEX(poly.vtxData[0])];
++        const auto& b=header->vtxList[COLPOLY_VTX_INDEX(poly.vtxData[1])];
++        const auto& c=header->vtxList[COLPOLY_VTX_INDEX(poly.vtxData[2])];
++        float twiceArea=std::fabs((float(b.x)-a.x)*(float(c.z)-a.z)-(float(b.z)-a.z)*(float(c.x)-a.x));
++        int samples=Clamp(static_cast<int>(twiceArea/(edgeRange*edgeRange*0.32f))+1,1,24);
++        for (int k=0;k<samples;++k) {
++            float u = k==0 ? 1.0f/3.0f : 0.08f+Random01(seed)*0.84f;
++            float v = k==0 ? 1.0f/3.0f : (0.08f+Random01(seed)*0.84f)*(1-u);
++            Vec3f p{a.x+(b.x-a.x)*u+(c.x-a.x)*v, a.y+(b.y-a.y)*u+(c.y-a.y)*v+1,
++                    a.z+(b.z-a.z)*u+(c.z-a.z)*v};
++            ++seen;
++            if (candidates.size()<candidateLimit) candidates.push_back(p);
++            else { size_t at=NextRandom(seed)%seen; if(at<candidateLimit) candidates[at]=p; }
++        }
++    }
++    // Shuffle the reservoir before truncation; sorting all candidates by player distance
++    // would fill the graph budget near the entrance and omit distant world-boss terrain.
++    for(size_t i=candidates.size();i>1;--i)std::swap(candidates[i-1],candidates[NextRandom(seed)%i]);
++    Actor* player = &GET_PLAYER(play)->actor;
++    std::vector<Vec3f> local;
++    // Include the reachable entrance first; use dense local samples in tiny interiors.
++    for (int r=0;r<4;++r) for (int k=0;k<12;++k) {
++        float angle=k*6.2831853f/12;
++        local.push_back({player->world.pos.x+std::sin(angle)*r*90,player->world.pos.y,
++                              player->world.pos.z+std::cos(angle)*r*90});
++    }
++    candidates.insert(candidates.begin(),local.begin(),local.end());
++    nodes.reserve(640);
++}
++void Navigation::Step(PlayState* play) {
++    if (built) return;
++    // Floor queries and edge probes are deliberately spread over simulation ticks.
++    if (sampleCursor<candidates.size()) {
++        int budget=32;
++        float minSeparation=Clamp(edgeRange*0.30f,35.0f,320.0f);
++        while(budget-- && sampleCursor<candidates.size()) {
++            Vec3f p=candidates[sampleCursor++];
++            if (!Ground(play,p,20,30)) continue;
++            bool duplicate=false;
++            for(const auto& n:nodes) if(LengthSq(n.pos,p)<minSeparation*minSeparation){duplicate=true;break;}
++            if(!duplicate && nodes.size()<640) nodes.push_back({p,{},false});
++        }
++        return;
++    }
++    int budget=8;
++    while(budget-- && edgeCursor<nodes.size()) {
++        size_t index=edgeCursor++;
++        std::vector<std::pair<float,int>> nearbyNodes;
++        for(size_t j=0;j<nodes.size();++j) {
++            if(j==index)continue;
++            float distance=LengthSq(nodes[index].pos,nodes[j].pos);
++            if(distance<edgeRange*edgeRange)nearbyNodes.emplace_back(distance,static_cast<int>(j));
++        }
++        std::sort(nearbyNodes.begin(),nearbyNodes.end());
++        if(nearbyNodes.size()>10)nearbyNodes.resize(10);
++        for(const auto& pair:nearbyNodes) {
++            int j=pair.second;
++            if(std::find(nodes[index].edges.begin(),nodes[index].edges.end(),j)!=nodes[index].edges.end())continue;
++            if(Walkable(play,nodes[index].pos,nodes[j].pos)) {
++                nodes[index].edges.push_back(j);nodes[j].edges.push_back(static_cast<int>(index));
++            }
++        }
++    }
++    if(edgeCursor>=nodes.size()) { built=true; candidates.clear(); RefreshReachable(play); }
++}
++int Navigation::Nearest(const Vec3f& pos,bool reachableOnly) const {
++    int result=-1; float best=(std::numeric_limits<float>::max)();
++    for(size_t i=0;i<nodes.size();++i) {
++        if(reachableOnly&&!nodes[i].reachable)continue;
++        float d=LengthSq(pos,nodes[i].pos);
++        if(d<best){best=d;result=static_cast<int>(i);}
++    }
++    return result;
++}
++void Navigation::RefreshReachable(PlayState* play) {
++    for(auto& n:nodes)n.reachable=false;
++    Vec3f player=GET_PLAYER(play)->actor.world.pos;
++    std::queue<int> pending;
++    // Connecting all visible local seeds also tolerates a temporarily closed dynamic door.
++    for(size_t i=0;i<nodes.size();++i) {
++        if(LengthSq(nodes[i].pos,player)<400*400 && Walkable(play,player,nodes[i].pos)) {
++            nodes[i].reachable=true; pending.push(static_cast<int>(i));
++        }
++    }
++    while(!pending.empty()) {
++        int at=pending.front();pending.pop();
++        for(int next:nodes[at].edges) if(!nodes[next].reachable) {
++            nodes[next].reachable=true;pending.push(next);
++        }
++    }
++}
++int Navigation::ReachableCount() const {
++    return static_cast<int>(std::count_if(nodes.begin(),nodes.end(),[](const NavNode& n){return n.reachable;}));
++}
++std::vector<int> Navigation::Route(int start,int goal) const {
++    if(start<0||goal<0||start>=static_cast<int>(nodes.size())||goal>=static_cast<int>(nodes.size()))return {};
++    std::vector<float> cost(nodes.size(),(std::numeric_limits<float>::max)());
++    std::vector<int> previous(nodes.size(),-1);
++    using Entry=std::pair<float,int>;
++    std::priority_queue<Entry,std::vector<Entry>,std::greater<Entry>> open;
++    cost[start]=0;open.emplace(0,start);
++    while(!open.empty()) {
++        auto [distance,index]=open.top();open.pop();
++        if(distance>cost[index]+0.01f)continue;
++        if(index==goal)break;
++        for(int next:nodes[index].edges) {
++            float candidate=distance+std::sqrt(LengthSq(nodes[index].pos,nodes[next].pos));
++            if(candidate<cost[next]){cost[next]=candidate;previous[next]=index;open.emplace(candidate,next);}
++        }
++    }
++    if(start!=goal&&previous[goal]<0)return {};
++    std::vector<int> result;
++    for(int node=goal;node!=-1;node=previous[node]){result.push_back(node);if(node==start)break;}
++    std::reverse(result.begin(),result.end());return result;
++}
++bool Navigation::Move(PlayState* play,Actor* actor,const Vec3f& desired) const {
++    Vec3f next=desired;
++    if(!Ground(play,next,28,40)||!Clear(play,actor->world.pos,next))return false;
++    Vec3f resolved{};CollisionPoly* wall=nullptr;int bgId=BGCHECK_SCENE;
++    // Actor collision tests use a real body radius and consider dynamic walls as well as static geometry.
++    const Unit* unit=Find(actor);
++    const float radius=unit?unit->radius:18.0f;
++    const float height=unit?Clamp(unit->height*0.5f,25.0f,100.0f):35.0f;
++    BgCheck_EntitySphVsWall3(&play->colCtx,&resolved,&next,&actor->world.pos,radius,&wall,&bgId,actor,height);
++    if(LengthSq(next,resolved)>30*30)return false;
++    if(!Ground(play,resolved,28,40))return false;
++    actor->world.pos=resolved;
++    return true;
++}
++bool Navigation::SpawnPoint(PlayState* play,uint32_t& seed,Vec3f& result,bool large,const Vec3f* around) const {
++    if(!built||nodes.empty())return false;
++    float best=-1;bool found=false;
++    const auto player=GET_PLAYER(play)->actor.world.pos;
++    for(int attempt=0;attempt<80;++attempt) {
++        const auto& node=nodes[NextRandom(seed)%nodes.size()];if(!node.reachable)continue;
++        Vec3f p=node.pos;
++        p.x+=(Random01(seed)-0.5f)*50;p.z+=(Random01(seed)-0.5f)*50;
++        if(around&&(DistanceXZ(p,*around)>950||DistanceXZ(p,*around)<200))continue;
++        if(DistanceXZ(p,player)<(large?500:95))continue;
++        if(!Ground(play,p,28,35)||!Clear(play,node.pos,p))continue;
++        float gap=large?1200.0f:600.0f;
++        for(const auto& [actor,u]:units) {
++            if(!Alive(u)||u.native)continue;
++            gap=(std::min)(gap,DistanceXZ(actor->world.pos,p)-u.radius);
++        }
++        if(gap<(large?180:24))continue;
++        if(large) {
++            Vec3f top=p;top.y+=430;
++            if(!Clear(play,p,top,3.0f))continue;
++            bool fits=true;
++            for(int k=0;k<8;++k){float a=k*6.2831853f/8;Vec3f q{p.x+std::sin(a)*160,p.y,p.z+std::cos(a)*160};
++                if(!Ground(play,q,30,40)||!Clear(play,p,q)){fits=false;break;}}
++            if(!fits)continue;
++        }
++        float score=gap+(around?0:(std::min)(DistanceXZ(p,player)*0.03f,150.0f));
++        if(score>best){best=score;result=p;found=true;}
++    }
++    return found;
++}
++} // namespace Nxt
+--- /dev/null
++++ b/soh/soh/Enhancements/NxtRpg/NxtNavigation.h
+@@ -0,0 +1,29 @@
++#pragma once
++#include "NxtWorld.h"
++namespace Nxt {
++struct NavNode { Vec3f pos; std::vector<int> edges; bool reachable = false; };
++class Navigation {
++  public:
++    void Reset();
++    void Begin(PlayState* play);
++    void Step(PlayState* play);
++    void RefreshReachable(PlayState* play);
++    bool Ready() const { return built; }
++    bool Ground(PlayState* play, Vec3f& pos, float step = 45.0f, float drop = 60.0f) const;
++    bool Clear(PlayState* play, const Vec3f& a, const Vec3f& b, float height = 30.0f) const;
++    bool Walkable(PlayState* play, const Vec3f& a, const Vec3f& b) const;
++    bool Move(PlayState* play, Actor* actor, const Vec3f& desired) const;
++    int Nearest(const Vec3f& pos, bool reachableOnly = false) const;
++    std::vector<int> Route(int start, int goal) const;
++    bool SpawnPoint(PlayState* play, uint32_t& seed, Vec3f& result, bool large = false,
++                    const Vec3f* around = nullptr) const;
++    std::vector<NavNode> nodes;
++    int ReachableCount() const;
++  private:
++    std::vector<Vec3f> candidates;
++    size_t sampleCursor = 0, edgeCursor = 0;
++    bool built = false;
++    float edgeRange = 500.0f;
++};
++extern Navigation navigation;
++} // namespace Nxt
+--- /dev/null
++++ b/soh/soh/Enhancements/NxtRpg/NxtRules.h
+@@ -0,0 +1,95 @@
++#pragma once
++// Deterministic, engine-independent rules. All arithmetic is bounded before it reaches the legacy engine.
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <limits>
++
++namespace Nxt {
++constexpr int MaxLevel = 100;
++constexpr int BossCount = 5;
++constexpr int MaxPopulation = 220;
++constexpr int SimHz = 20;
++
++template <typename T> constexpr T Clamp(T value, T lo, T hi) {
++    return (std::min)(hi, (std::max)(lo, value));
++}
++struct Stats {
++    int level = 1;
++    int maxHp = 120;
++    int attack = 20;
++    int defense = 10;
++    int spirit = 12;
++    int agility = 10;
++    float crit = 0.06f;
++};
++inline Stats PlayerStats(int level) {
++    level = Clamp(level, 1, MaxLevel);
++    return { level, 120 + (level - 1) * 22, 20 + (level - 1) * 4, 10 + (level - 1) * 3,
++             12 + (level - 1) * 3, 10 + (level - 1) * 2, 0.06f + (level - 1) * 0.0006f };
++}
++constexpr uint32_t XpRequired(int level) {
++    level = Clamp(level, 1, MaxLevel);
++    return level == MaxLevel ? 0U : static_cast<uint32_t>(100 + level * 45 + level * level * 9);
++}
++// The same seed drives appearance and stat variation; no use of the game's randomizer RNG.
++inline uint32_t NextRandom(uint32_t& seed) {
++    if (seed == 0) seed = 0x9E3779B9U;
++    seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
++    return seed;
++}
++inline float Random01(uint32_t& seed) { return (NextRandom(seed) >> 8) * (1.0f / 16777216.0f); }
++inline int VariedLevel(int playerLevel, int spread, uint32_t& seed, int bonus = 0) {
++    spread = Clamp(spread, 0, 10);
++    int offset = static_cast<int>(NextRandom(seed) % static_cast<uint32_t>(spread * 2 + 1)) - spread;
++    return Clamp(playerLevel + offset + bonus, 1, MaxLevel);
++}
++inline Stats EnemyStats(int level, uint32_t& seed, bool berserk = false) {
++    Stats s = PlayerStats(level);
++    s.maxHp = static_cast<int>(s.maxHp * (0.58f + Random01(seed) * 0.32f));
++    s.attack = static_cast<int>(s.attack * (0.70f + Random01(seed) * 0.35f));
++    s.defense = static_cast<int>(s.defense * (0.55f + Random01(seed) * 0.45f));
++    if (berserk) {
++        s.maxHp = static_cast<int>(s.maxHp * 1.35f);
++        s.attack = static_cast<int>(s.attack * 1.40f);
++        s.defense = static_cast<int>(s.defense * 0.85f);
++    }
++    return s;
++}
++inline int Damage(int attack, int defense, float power = 1.0f, bool critical = false, float variance = 1.0f) {
++    const float mitigation = 100.0f / (100.0f + (std::max)(0, defense) * 0.65f);
++    const float value = (std::max)(1, attack) * Clamp(power, 0.0f, 8.0f) * mitigation *
++                        (critical ? 1.65f : 1.0f) * Clamp(variance, 0.85f, 1.15f);
++    return Clamp(static_cast<int>(std::lround(value)), 1, 1000000);
++}
++inline uint32_t KillXp(int level, int playerLevel, bool berserk, bool boss, float share = 1.0f,
++                       float rate = 1.0f) {
++    float relative = Clamp(1.0f + (level - playerLevel) * 0.10f, 0.15f, 1.8f);
++    float value = (24.0f + level * 9.0f) * relative * (berserk ? 1.8f : 1.0f) *
++                  (boss ? 35.0f : 1.0f) * Clamp(share, 0.0f, 1.0f) * Clamp(rate, 0.1f, 10.0f);
++    return static_cast<uint32_t>(Clamp(value, 0.0f, 10000000.0f));
++}
++inline int GrantXp(uint32_t& level, uint32_t& xp, uint32_t award) {
++    level = Clamp(level, 1U, static_cast<uint32_t>(MaxLevel));
++    const uint32_t start = level;
++    uint64_t bank = static_cast<uint64_t>(xp) + award;
++    while (level < MaxLevel && bank >= XpRequired(level)) { bank -= XpRequired(level); ++level; }
++    xp = level == MaxLevel ? 0 : static_cast<uint32_t>((std::min)(bank, uint64_t{10000000}));
++    return static_cast<int>(level - start);
++}
++inline float RecoveryBonus(const Stats& player) { return 1.0f + player.spirit / 1200.0f; }
++inline float DodgeChance(const Stats& defender, const Stats& attacker) {
++    return Clamp(0.02f + (defender.agility-attacker.agility)*0.002f,0.0f,0.12f);
++}
++inline int HealthUnits(int damage, int maxHp, int nativeCapacity) {
++    if (damage <= 0 || nativeCapacity <= 0) return 0;
++    return Clamp(static_cast<int>(std::ceil(static_cast<double>(damage) * nativeCapacity /
++                                           (std::max)(1, maxHp))), 1, nativeCapacity);
++}
++inline int BossHealth(const Stats& boss, int raidSize, int durationSeconds, float multiplier) {
++    const Stats ally = PlayerStats((std::max)(1, boss.level - 5));
++    const double dps = Damage(ally.attack, boss.defense) * (Clamp(raidSize, 0, 24) + 5.0) / 1.6;
++    return Clamp(static_cast<int>(dps * Clamp(durationSeconds, 60, 900) * Clamp(multiplier, 0.25f, 5.0f)),
++                 1500, 10000000);
++}
++} // namespace Nxt
+--- /dev/null
++++ b/soh/soh/Enhancements/NxtRpg/NxtWorld.cpp
+@@ -0,0 +1,473 @@
++#include "NxtWorld.h"
++#include "NxtBridge.h"
++#include "NxtNavigation.h"
++#include "NxtConfig.h"
++#include <algorithm>
++#include <cmath>
++#include <cstring>
++#include <deque>
++#include <limits>
++
++extern "C" { extern PlayState* gPlayState; }
++namespace Nxt {
++Options options;
++std::unordered_map<Actor*, Unit> units;
++std::array<BossView, BossCount> bossViews;
++std::vector<CombatText> combatText;
++int botActorId=-1,enemyActorId=-1,frame=0;
++static uint32_t nextSerial=1, worldSeed=0x84A29B71;
++static int scalingRevision=0;
++static int activeScene=-1,activeRoom=-128,lastLevel=1,lastHurt=-100000,sceneAge=0;
++static bool repopulate=false,tearingDown=false,skipDamageConversion=false;
++static float regenBank=0;
++static std::string status="Waiting for a playable scene";
++static std::deque<int> enemyRespawns,botRespawns;
++static std::array<Vec3f,BossCount> bossHomes{};
++static std::array<bool,BossCount> bossHomeValid{};
++struct HitRecord { Actor* source=nullptr; int tick=0; uint8_t touchDamage=0; };
++static std::unordered_map<Actor*,HitRecord> hits;
++Actor* RecordedHitSource(Actor* defender){
++    auto hit=hits.find(defender);return hit!=hits.end()&&frame-hit->second.tick<8?hit->second.source:nullptr;
++}
++int RecordedTouchDamage(Actor* defender){
++    auto hit=hits.find(defender);return hit!=hits.end()&&frame-hit->second.tick<8?hit->second.touchDamage:0;
++}
++static const char* bossNames[BossCount]={"Morrow, the Bone Colossus","Varkesh, Hyrule's Ravager",
++    "Gorvath, the Iron Bulwark","Ashfang, the Moonstalker","Cindermaw, the Earthshaker"};
++static const char* profileNames[5]={"Wandering Stalfos","Field Lizalfos","Marauding Moblin","Feral Wolfos","Wild Dodongo"};
++static const char* botNames[]={"Aster","Rowan","Kael","Liora","Fen","Arden","Mira","Talon","Sera","Riven",
++    "Orin","Lyra","Vex","Cedar","Eira","Rune","Ashen","Briar","Cora","Dax","Elara","Flint","Galen","Hale",
++    "Iris","Jora","Kestrel","Lark","Moss","Nera","Oak","Pike","Quill","Reed","Sable","Thorn","Una","Vale",
++    "Wren","Yara","Zephyr","Amber","Bram","Ciro","Dawn","Ember","Fable","Grove","Haven","Indra",
++    "Juniper","Kira","Lumen","Merin","Nyx","Oriel","Perrin","Rook","Sol","Tessa","Vela","Willow","Zara","Nox"};
++const char* BossName(int i){return bossNames[Clamp(i,0,BossCount-1)];}
++const char* ProfileName(int i){return profileNames[Clamp(i,0,4)];}
++const char* RoleName(Role role){return role==Role::Mender?"Mender":role==Role::Skirmisher?"Skirmisher":"Vanguard";}
++const char* ActionName(Action a){switch(a){case Action::Roam:return "Exploring";case Action::Pursue:return "Engaging";
++    case Action::Attack:return "Attacking";case Action::Recover:return "Recovering";case Action::Cast:return "Casting";
++    case Action::Dead:return "Defeated";case Action::Depart:return "Departing";}return "";}
++const std::string& Status(){return status;}
++float DistanceXZ(const Vec3f& a,const Vec3f& b){float x=a.x-b.x,z=a.z-b.z;return std::sqrt(x*x+z*z);}
++Unit* Find(Actor* a){auto it=units.find(a);return it==units.end()?nullptr:&it->second;}
++bool Alive(const Unit& u){return u.actor&&u.actor->update&&u.hp>0&&u.action!=Action::Dead&&u.action!=Action::Depart;}
++Stats CurrentPlayerStats(){return PlayerStats(options.rpg?static_cast<int>(gSaveContext.ship.nxt.level):1);}
++bool SceneEnabled(int scene){
++    if(scene<0||scene>=SCENE_TEST01)return false;
++    if(scene>=SCENE_DEKU_TREE_BOSS&&scene<=SCENE_GANONS_TOWER_COLLAPSE_EXTERIOR)return false;
++    switch(scene){
++        case SCENE_CHAMBER_OF_THE_SAGES:case SCENE_CUTSCENE_MAP:case SCENE_CASTLE_COURTYARD_GUARDS_DAY:
++        case SCENE_CASTLE_COURTYARD_GUARDS_NIGHT:case SCENE_CASTLE_COURTYARD_ZELDA:
++        case SCENE_GANON_BOSS:case SCENE_SHOOTING_GALLERY:case SCENE_BOMBCHU_BOWLING_ALLEY:
++        case SCENE_FISHING_POND:case SCENE_GANONS_TOWER_COLLAPSE_INTERIOR:
++        case SCENE_INSIDE_GANONS_CASTLE_COLLAPSE:return false;
++        default:return true;
++    }
++}
++bool CombatScene(int scene){
++    // Explicit allowlist: a newly added interior is safe unless deliberately classified as combat terrain.
++    if(scene>=SCENE_DEKU_TREE&&scene<=SCENE_ICE_CAVERN)return true;
++    switch(scene){
++        case SCENE_GERUDO_TRAINING_GROUND:case SCENE_INSIDE_GANONS_CASTLE:
++        case SCENE_REDEAD_GRAVE:case SCENE_ROYAL_FAMILYS_TOMB:
++        case SCENE_HYRULE_FIELD:case SCENE_ZORAS_RIVER:case SCENE_SACRED_FOREST_MEADOW:
++        case SCENE_LAKE_HYLIA:case SCENE_ZORAS_FOUNTAIN:case SCENE_GERUDO_VALLEY:case SCENE_LOST_WOODS:
++        case SCENE_DESERT_COLOSSUS:case SCENE_HAUNTED_WASTELAND:case SCENE_DEATH_MOUNTAIN_TRAIL:
++        case SCENE_DEATH_MOUNTAIN_CRATER:case SCENE_OUTSIDE_GANONS_CASTLE:return true;
++        default:return false;
++    }
++}
++const char* SceneKind(int scene){return !SceneEnabled(scene)?"Protected scene":CombatScene(scene)?"Combat territory":"Safe settlement / interior";}
++bool Running(PlayState* play){
++    return options.enabled&&play&&play->state.running&&SceneEnabled(play->sceneNum)&&
++        gSaveContext.gameMode==GAMEMODE_NORMAL&&gSaveContext.health>0&&play->pauseCtx.state==0&&
++        play->csCtx.state==CS_STATE_IDLE&&play->msgCtx.msgMode==MSGMODE_NONE&&
++        play->transitionTrigger==TRANS_TRIGGER_OFF&&GET_PLAYER(play)&&
++        !Player_InCsMode(play);
++}
++void ReadOptions(){
++    const Options previous=options;
++    auto integer=[](const char* name,int def,int lo,int hi){return Clamp(ConfigInt(name,def),lo,hi);};
++    auto real=[](const char* name,float def,float lo,float hi){float x=ConfigFloat(name,def);return std::isfinite(x)?Clamp(x,lo,hi):def;};
++    options.enabled=integer(NXT_CVAR("Enabled"),1,0,1);options.rpg=integer(NXT_CVAR("Rpg"),1,0,1);
++    options.bots=integer(NXT_CVAR("Bots"),1,0,1);options.enemies=integer(NXT_CVAR("Enemies"),1,0,1);
++    options.bosses=integer(NXT_CVAR("WorldBosses"),1,0,1);options.nativeScaling=integer(NXT_CVAR("ScaleNative"),1,0,1);
++    options.regen=integer(NXT_CVAR("Regen"),1,0,1);options.hud=integer(NXT_CVAR("Hud"),1,0,1);
++    options.plates=integer(NXT_CVAR("Nameplates"),1,0,1);options.friendlyPlates=integer(NXT_CVAR("FriendlyPlates"),1,0,1);
++    options.sharing=integer(NXT_CVAR("ShareXp"),1,0,1);
++    options.botCount=integer(NXT_CVAR("BotCount"),30,0,50);options.indoorCount=integer(NXT_CVAR("IndoorCount"),10,0,50);
++    options.enemyRatio=integer(NXT_CVAR("EnemyRatio"),2,0,4);options.enemyCap=integer(NXT_CVAR("EnemyCap"),90,0,120);
++    options.raidSize=integer(NXT_CVAR("RaidSize"),12,0,24);options.raidCap=integer(NXT_CVAR("RaidCap"),36,0,48);
++    options.variance=integer(NXT_CVAR("LevelSpread"),3,0,10);options.berserkChance=integer(NXT_CVAR("BerserkChance"),20,0,100);
++    options.respawnSeconds=integer(NXT_CVAR("EnemyRespawn"),35,5,300);
++    options.bossRespawnMinutes=integer(NXT_CVAR("BossRespawn"),20,2,120);
++    options.bossDuration=integer(NXT_CVAR("BossDuration"),300,60,900);
++    options.regenDelay=integer(NXT_CVAR("RegenDelay"),7,0,60);
++    options.plateLimit=integer(NXT_CVAR("PlateLimit"),24,4,64);options.plateDistance=integer(NXT_CVAR("PlateDistance"),1500,200,4000);
++    options.xpRate=real(NXT_CVAR("XpRate"),1,0.1f,10);options.damageRate=real(NXT_CVAR("DamageRate"),1,0.1f,5);
++    options.regenPercent=real(NXT_CVAR("RegenPercent"),3,0.1f,20);
++    options.bossHpRate=real(NXT_CVAR("BossHpRate"),1,0.25f,5);options.botPower=real(NXT_CVAR("BotPower"),1,0.25f,3);
++    if(previous.rpg!=options.rpg||previous.nativeScaling!=options.nativeScaling||previous.botPower!=options.botPower||
++       previous.bossHpRate!=options.bossHpRate||previous.bossDuration!=options.bossDuration||
++       previous.raidSize!=options.raidSize||previous.variance!=options.variance)++scalingRevision;
++}
++int DesiredBots(int scene){
++    if(!options.bots||!SceneEnabled(scene))return 0;
++    std::string key=NXT_CVAR("Scene.")+std::to_string(scene)+".Bots";
++    int local=Clamp(ConfigInt(key.c_str(),-1),-1,50);
++    if(local>=0)return local;
++    return (scene<SCENE_HYRULE_FIELD&&!CombatScene(scene))?options.indoorCount:options.botCount;
++}
++int DesiredEnemies(int scene){return options.enemies&&CombatScene(scene)?(std::min)(options.enemyCap,
++    (std::max)(10,DesiredBots(scene))*options.enemyRatio):0;}
++int LivingCount(bool bots,bool raidOnly){int n=0;for(const auto& [a,u]:units)
++    if(Alive(u)&&!u.native&&u.bot==bots&&(raidOnly?u.raid:!u.raid)&&u.bossIndex<0)++n;return n;}
++void RequestRepopulate(){repopulate=true;}
++void AddText(const Vec3f& pos,const std::string& text,uint32_t color){
++    if(combatText.size()>=48)combatText.erase(combatText.begin());
++    combatText.push_back({pos,text,color,40});
++}
++static Actor* ResolveSource(Actor* a){
++    if(!a||!gPlayState)return nullptr;
++    if(a==&GET_PLAYER(gPlayState)->actor||Find(a))return a;
++    if(a->parent&&(a->parent==&GET_PLAYER(gPlayState)->actor||Find(a->parent)))return a->parent;
++    switch(a->id){case ACTOR_EN_ARROW:case ACTOR_EN_BOOM:case ACTOR_EN_BOM:case ACTOR_EN_BOM_CHU:
++        case ACTOR_ARMS_HOOK:case ACTOR_MAGIC_FIRE:case ACTOR_EN_M_THUNDER:return &GET_PLAYER(gPlayState)->actor;
++        default:return a;}
++}
++void Rescale(Unit& u){
++    float ratio=u.stats.maxHp>0?Clamp(u.hp/u.stats.maxHp,0.0f,1.0f):1.0f;
++    uint32_t seed=u.serial*0x9E3779B9U+17;
++    int level=VariedLevel(CurrentPlayerStats().level,options.variance,seed,u.bossIndex>=0?5:0);
++    u.stats=u.bot?PlayerStats(level):EnemyStats(level,seed,u.berserk);
++    if(u.bot){
++        u.stats.attack=static_cast<int>(u.stats.attack*options.botPower*(u.role==Role::Mender?0.72f:0.88f));
++        if(u.role==Role::Vanguard){u.stats.maxHp=static_cast<int>(u.stats.maxHp*1.30f);u.stats.defense+=6;}
++        if(u.role==Role::Skirmisher){u.stats.attack=static_cast<int>(u.stats.attack*1.15f);u.stats.crit+=0.06f;}
++    }
++    if(u.bossIndex>=0){
++        u.stats.defense+=level*2;u.stats.attack=static_cast<int>(u.stats.attack*1.50f);
++        u.stats.maxHp=BossHealth(u.stats,options.raidSize,options.bossDuration,options.bossHpRate);
++    }
++    if(u.native&&(!options.rpg||!options.nativeScaling))u.stats.maxHp=(std::max)(1,u.nativeMaxHp);
++    u.hp=ratio*u.stats.maxHp;u.displayHp=u.hp;
++    u.scaledForLevel=CurrentPlayerStats().level;u.scaledForRevision=scalingRevision;
++}
++void AddUnit(Actor* a,bool bot){
++    Unit u;u.actor=a;u.serial=nextSerial++;u.seed=u.serial*0x45D9F3BU+frame+1;u.bot=bot;
++    u.home=u.goal=a->world.pos;u.raid=bot&&(a->params&0x100);u.squad=u.raid?((a->params>>5)&7):-1;
++    u.bossIndex=!bot&&(a->params&0x100)?(a->params&7):-1;
++    u.profile=bot?0:Clamp(a->params&7,0,4);
++    u.role=static_cast<Role>(bot?(a->params&0x1F)%3:0);
++    u.color=NextRandom(u.seed)%24;
++    u.berserk=!bot&&u.bossIndex<0&&static_cast<int>(NextRandom(u.seed)%100)<options.berserkChance;
++    if(bot){
++        u.name=botNames[(u.serial+unsigned((std::max)(0,activeScene))*7)%64];
++        u.name+="#"+std::to_string(u.serial%10000);
++        if(u.raid)u.name+=" [Raid]";
++    }else u.name=u.bossIndex>=0?BossName(u.bossIndex):ProfileName(u.profile);
++    u.radius=bot?18.0f:(u.profile==2?30.0f:u.profile==4?40.0f:24.0f);
++    u.height=bot?(LINK_IS_ADULT?68.0f:46.0f):(u.profile==2?115.0f:u.profile==4?55.0f:75.0f);
++    // The models have different native unit scales, not a single scale copied onto every skeleton.
++    static const float scales[5]={0.015f,0.015f,0.01f,0.0075f,0.01875f};
++    u.modelScale=bot?0.01f:scales[u.profile];
++    if(u.bossIndex>=0){u.radius*=3.4f;u.height*=3.4f;u.modelScale*=3.4f;
++        if(bossHomeValid[u.bossIndex])u.home=bossHomes[u.bossIndex];}
++    u.hp=static_cast<float>(u.stats.maxHp);Rescale(u);
++    u.thinkTimer=static_cast<int>(NextRandom(u.seed)%15);u.cooldown=20;
++    units.emplace(a,std::move(u));
++}
++void RemoveUnit(Actor* a){
++    auto it=units.find(a);
++    if(it!=units.end()){
++        const Unit& u=it->second;
++        if(!tearingDown&&!u.native&&u.action==Action::Dead&&u.bossIndex<0&&!u.raid){
++            if(u.bot)botRespawns.push_back(frame+15*SimHz);
++            else enemyRespawns.push_back(frame+options.respawnSeconds*SimHz);
++        }
++        units.erase(it);
++    }
++    hits.erase(a);
++    for(auto itHit=hits.begin();itHit!=hits.end();)if(itHit->second.source==a)itHit=hits.erase(itHit);else ++itHit;
++    for(auto& [_,u]:units)if(u.target==a){u.target=nullptr;u.targetSerial=0;u.path.clear();}
++}
++void Award(Unit& u){
++    if(u.awarded||u.bot)return;u.awarded=true;
++    if(u.native){u.hp=0;u.action=Action::Dead;}
++    if(u.bossIndex>=0){
++        gSaveContext.ship.nxt.bossCooldown[u.bossIndex]=options.bossRespawnMinutes*60;
++        for(auto& [_,ally]:units)if(ally.raid&&ally.squad==u.bossIndex){ally.action=Action::Depart;ally.actionTimer=80;ally.target=nullptr;}
++    }
++    if(!options.enabled||!options.rpg||!gPlayState||gSaveContext.health<=0)return;
++    Actor* player=&GET_PLAYER(gPlayState)->actor;
++    float distance=DistanceXZ(player->world.pos,u.actor->world.pos);
++    bool tagged=frame-u.lastPlayerTag<45*SimHz;
++    float share=tagged&&distance<4000?1.0f:(options.sharing&&distance<650?0.35f:0.0f);
++    if(share<=0)return;
++    uint32_t reward=KillXp(u.stats.level,CurrentPlayerStats().level,u.berserk,u.bossIndex>=0,share,options.xpRate);
++    auto& save=gSaveContext.ship.nxt;
++    int levels=GrantXp(save.level,save.xp,reward);
++    if(save.kills<(std::numeric_limits<uint32_t>::max)())++save.kills;
++    if(u.bossIndex>=0&&save.bossKills<(std::numeric_limits<uint32_t>::max)())++save.bossKills;
++    AddText(player->world.pos,"+"+std::to_string(reward)+" XP",0xFFFFD180);
++    if(levels){
++        gSaveContext.health=gSaveContext.healthCapacity;
++        AddText(player->world.pos,"LEVEL "+std::to_string(save.level),0xFF88FFCC);
++    }
++}
++void HitUnit(Unit& u,Actor* source,int baseDamage,float power){
++    if(!Alive(u)||u.hurtTimer>0)return;
++    source=ResolveSource(source);
++    bool player=gPlayState&&source==&GET_PLAYER(gPlayState)->actor;
++    Unit* attacker=Find(source);
++    if(attacker&&attacker->bot==u.bot)return;
++    if(u.bot&&player)return; // No accidental friendly fire.
++    if(player){u.lastPlayerTag=frame;lastHurt=frame;}
++    if(baseDamage<=0){u.hurtTimer=12;return;}
++    Stats attack=attacker?attacker->stats:(player?CurrentPlayerStats():EnemyStats(CurrentPlayerStats().level,u.seed));
++    float factor=player?Clamp(0.6f+baseDamage*0.25f,0.65f,3.0f):power;
++    if(Random01(u.seed)<DodgeChance(u.stats,attack)){
++        u.hurtTimer=3;AddText(u.actor->world.pos,"EVADE",0xFFE1DCA0);return;
++    }
++    bool critical=Random01(u.seed)<attack.crit;
++    int dealt=Damage(attack.attack,u.stats.defense,factor,critical,0.90f+Random01(u.seed)*0.20f);
++    u.hp=(std::max)(0.0f,u.hp-dealt);u.hurtTimer=u.bossIndex>=0?2:6;u.combatTimer=12*SimHz;
++    if(attacker){attacker->combatTimer=12*SimHz;if(!u.bot&&attacker->bot){u.target=source;u.targetSerial=attacker->serial;}}
++    if(player&&!u.bot){u.target=source;u.targetSerial=0;u.threat+=dealt*1.5f;}
++    AddText(u.actor->world.pos,std::to_string(dealt)+(critical?"!":""),u.bot?0xFF8AC9FF:critical?0xFF68DAFF:0xFFEAEAEA);
++    if(u.hp<=0){u.action=Action::Dead;u.actionTimer=30;u.target=nullptr;u.actor->flags&=~ACTOR_FLAG_ATTENTION_ENABLED;Award(u);}
++}
++void DamagePlayer(PlayState* play,Unit& source,float power){
++    Player* player=GET_PLAYER(play);
++    if(!Running(play)||!play->damagePlayer||player->invincibilityTimer!=0||source.hp<=0)return;
++    float yaw=std::atan2(source.actor->world.pos.x-player->actor.world.pos.x,source.actor->world.pos.z-player->actor.world.pos.z);
++    int16_t delta=static_cast<int16_t>(static_cast<int16_t>(yaw*32768.0f/3.14159265f)-player->actor.shape.rot.y);
++    if((player->stateFlags1&PLAYER_STATE1_SHIELDING)&&std::abs(static_cast<int>(delta))<0x3000)power*=0.20f;
++    if(Random01(source.seed)<DodgeChance(CurrentPlayerStats(),source.stats)){
++        AddText(player->actor.world.pos,"EVADE",0xFFE1DCA0);lastHurt=frame;return;
++    }
++    int damage=Damage(source.stats.attack,CurrentPlayerStats().defense,power*options.damageRate);
++    int native=HealthUnits(damage,CurrentPlayerStats().maxHp,gSaveContext.healthCapacity);
++    skipDamageConversion=true;
++    play->damagePlayer(play,-native);
++    skipDamageConversion=false;
++    // damagePlayer handles health/death; invulnerability prevents an entire raid hitting on one tick.
++    if(gSaveContext.health>0)player->invincibilityTimer=20;
++    lastHurt=frame;regenBank=0;
++    AddText(player->actor.world.pos,"-"+std::to_string(damage),0xFF8585FF);
++}
++static bool NativeEligible(Actor* a){
++    if(!a||a->category!=ACTORCAT_ENEMY||a->colChkInfo.health==0||a->id==ACTOR_EN_SW)return false;
++    return a->id!=ACTOR_EN_NY&&a->id!=ACTOR_EN_ANUBICE;
++}
++void TrackNative(Actor* a){
++    if(!options.enabled||!gPlayState||!SceneEnabled(gPlayState->sceneNum)||!NativeEligible(a)||Find(a))return;
++    Unit u;u.actor=a;u.native=true;u.serial=nextSerial++;u.seed=u.serial*137+3;
++    u.nativeMaxHp=u.nativeLastHealth=a->colChkInfo.health;u.name="Hyrule foe";u.home=a->world.pos;
++    switch(a->id){case ACTOR_EN_TEST:u.name="Stalfos";break;case ACTOR_EN_ZF:u.name="Lizalfos";break;
++        case ACTOR_EN_MB:u.name="Moblin";break;case ACTOR_EN_DODONGO:u.name="Dodongo";break;
++        case ACTOR_EN_WF:u.name="Wolfos";break;case ACTOR_EN_RD:u.name="ReDead";break;
++        case ACTOR_EN_TITE:u.name="Tektite";break;case ACTOR_EN_FIREFLY:u.name="Keese";break;
++        case ACTOR_EN_DEKUBABA:u.name="Deku Baba";break;default:break;}
++    u.hp=u.stats.maxHp;Rescale(u);units.emplace(a,std::move(u));
++}
++static void ClearWorld(){
++    tearingDown=true;
++    for(auto& [a,u]:units)if(!u.native&&a->update)Actor_Kill(a);
++    units.clear();hits.clear();navigation.Reset();combatText.clear();
++    enemyRespawns.clear();botRespawns.clear();bossHomeValid.fill(false);
++    for(auto& b:bossViews)b={};
++    tearingDown=false;regenBank=0;sceneAge=0;
++}
++static bool Spawn(PlayState* play,bool bot,Vec3f point,int params){
++    if(units.size()>=MaxPopulation||play->actorCtx.total>ACTOR_NUMBER_MAX-80)return false;
++    const int id=bot?botActorId:enemyActorId;
++    return Actor_Spawn(&play->actorCtx,play,id,point.x,point.y,point.z,0,
++                       static_cast<int16_t>(NextRandom(worldSeed)),0,static_cast<int16_t>(params))!=nullptr;
++}
++static int ProfileForScene(int scene){
++    if(scene==SCENE_DEATH_MOUNTAIN_TRAIL||scene==SCENE_DEATH_MOUNTAIN_CRATER||scene==SCENE_DODONGOS_CAVERN)return 4;
++    if(scene==SCENE_SACRED_FOREST_MEADOW)return NextRandom(worldSeed)%2?2:3;
++    if(scene==SCENE_SHADOW_TEMPLE||scene==SCENE_BOTTOM_OF_THE_WELL||scene==SCENE_ROYAL_FAMILYS_TOMB)return 0;
++    if(scene==SCENE_LOST_WOODS||scene==SCENE_FOREST_TEMPLE)return NextRandom(worldSeed)%2?1:3;
++    return NextRandom(worldSeed)%5;
++}
++static void UpdateBosses(PlayState* play){
++    if(play->sceneNum!=SCENE_HYRULE_FIELD||!options.bosses||!navigation.Ready())return;
++    Actor* player=&GET_PLAYER(play)->actor;
++    for(int index=0;index<BossCount;++index){
++        Unit* boss=nullptr;int raiders=0;
++        for(auto& [_,u]:units){if(u.bossIndex==index&&Alive(u))boss=&u;if(u.raid&&u.squad==index&&Alive(u))++raiders;}
++        auto& view=bossViews[index];view.name=BossName(index);view.cooldown=gSaveContext.ship.nxt.bossCooldown[index];
++        view.alive=boss!=nullptr;view.raiders=raiders;
++        if(boss){view.hp=boss->hp;view.maxHp=static_cast<float>(boss->stats.maxHp);view.level=boss->stats.level;
++            view.engaged=boss->combatTimer>0;
++            if(DistanceXZ(player->world.pos,boss->home)<1700&&raiders<options.raidSize&&
++               LivingCount(true,true)<options.raidCap&&(frame%8)==index%8){
++                Vec3f point;
++                if(navigation.SpawnPoint(play,worldSeed,point,false,&boss->home))
++                    Spawn(play,true,point,0x100|(index<<5)|(raiders%24));
++            }
++            if(DistanceXZ(player->world.pos,boss->home)>4500){
++                for(auto& [_,u]:units)if(u.raid&&u.squad==index&&u.action!=Action::Depart){
++                    u.action=Action::Depart;u.actionTimer=60;u.target=nullptr;
++                }
++            }
++            continue;
++        }
++        view.engaged=false;view.hp=0;
++        if(view.cooldown>0||frame%10!=index*2)continue;
++        if(!bossHomeValid[index]){
++            Vec3f best{};bool valid=false;float bestScore=-1;
++            for(int attempt=0;attempt<12;++attempt){
++                Vec3f p;if(!navigation.SpawnPoint(play,worldSeed,p,true))continue;
++                float separation=100000;
++                for(int j=0;j<BossCount;++j)if(j!=index&&bossHomeValid[j])separation=(std::min)(separation,DistanceXZ(p,bossHomes[j]));
++                if(separation<1400)continue;
++                if(separation>bestScore){bestScore=separation;best=p;valid=true;}
++            }
++            if(!valid)continue;
++            bossHomes[index]=best;bossHomeValid[index]=true;
++        }
++        // Never recreate an actor in the same spot while its death animation is still running.
++        bool dying=false;for(auto& [_,u]:units)if(u.bossIndex==index)dying=true;
++        if(!dying)Spawn(play,false,bossHomes[index],0x100|index);
++    }
++}
++static void UpdatePopulation(PlayState* play){
++    if(!navigation.Ready())return;
++    while(!enemyRespawns.empty()&&enemyRespawns.front()<=frame)enemyRespawns.pop_front();
++    while(!botRespawns.empty()&&botRespawns.front()<=frame)botRespawns.pop_front();
++    int countBots=LivingCount(true),countEnemies=LivingCount(false);
++    int wantedBots=DesiredBots(play->sceneNum),wantedEnemies=DesiredEnemies(play->sceneNum);
++    int raidTotal=LivingCount(true,true);
++    std::array<int,BossCount> perBoss{};
++    for(const auto& [a,u]:units)if(u.raid&&Alive(u)&&u.squad>=0&&u.squad<BossCount)++perBoss[u.squad];
++    for(auto& [a,u]:units){
++        if(!Alive(u)||u.native)continue;
++        if(u.bossIndex>=0&&!options.bosses){u.action=Action::Depart;u.actionTimer=20;u.target=nullptr;}
++        if(u.raid&&(!options.bosses||raidTotal>options.raidCap||u.squad<0||u.squad>=BossCount||
++                   perBoss[u.squad]>options.raidSize)){
++            u.action=Action::Depart;u.actionTimer=30;u.target=nullptr;--raidTotal;
++            if(u.squad>=0&&u.squad<BossCount)--perBoss[u.squad];
++        }
++    }
++    if(!options.bosses)for(auto& boss:bossViews)boss={};
++    // Live reductions retire excess actors; no story actor or regular bot is commandeered for a raid.
++    for(auto& [a,u]:units){
++        if(u.native||u.raid||u.bossIndex>=0||!Alive(u))continue;
++        if((u.bot&&countBots>wantedBots)||(!u.bot&&countEnemies>wantedEnemies)){
++            u.action=Action::Depart;u.actionTimer=15;if(u.bot)--countBots;else --countEnemies;
++        }
++    }
++    if(frame%3==0){
++        Vec3f point;
++        if(countBots+static_cast<int>(botRespawns.size())<wantedBots&&navigation.SpawnPoint(play,worldSeed,point))
++            Spawn(play,true,point,static_cast<int>(NextRandom(worldSeed)%64));
++        if(countEnemies+static_cast<int>(enemyRespawns.size())<wantedEnemies&&navigation.SpawnPoint(play,worldSeed,point))
++            Spawn(play,false,point,ProfileForScene(play->sceneNum));
++    }
++    UpdateBosses(play);
++}
++void Tick(){
++    ReadOptions();
++    PlayState* play=gPlayState;
++    if(!play)return;
++    if(!options.enabled){if(!units.empty())ClearWorld();activeScene=-1;return;}
++    if(!Running(play))return;
++    ++frame;
++    if(activeScene!=play->sceneNum||activeRoom!=play->roomCtx.curRoom.num||repopulate){
++        ClearWorld();activeScene=play->sceneNum;activeRoom=play->roomCtx.curRoom.num;repopulate=false;
++        navigation.Begin(play);
++        for(int category=0;category<ACTORCAT_MAX;++category)
++            for(Actor* a=play->actorCtx.actorLists[category].head;a;a=a->next)TrackNative(a);
++    }
++    ++sceneAge;
++    navigation.Step(play);
++    if(navigation.Ready()&&frame%120==0)navigation.RefreshReachable(play);
++    status=navigation.Ready()?std::to_string(navigation.ReachableCount())+" connected navigation nodes":
++        "Surveying safe terrain: "+std::to_string(navigation.nodes.size())+" nodes";
++    UpdatePopulation(play);
++    if(frame%SimHz==0)for(auto& seconds:gSaveContext.ship.nxt.bossCooldown)if(seconds>0)--seconds;
++    int playerLevel=CurrentPlayerStats().level;
++    lastLevel=playerLevel;
++    for(auto& [a,u]:units){
++        // Defer rescaling until combat ends, including actors that were fighting at level-up.
++        if(Alive(u)&&u.combatTimer==0&&(u.scaledForLevel!=playerLevel||u.scaledForRevision!=scalingRevision))Rescale(u);
++        u.displayHp+=(u.hp-u.displayHp)*0.20f;
++        if(u.native){
++            const int nativeHealth=a->colChkInfo.health;
++            // Some story encounters resurrect their original actors in place.
++            // Detect a real zero-to-positive transition rather than treating dying animations as alive.
++            if(nativeHealth>0&&u.nativeLastHealth==0&&u.hp<=0){
++                u.nativeMaxHp=nativeHealth;u.awarded=false;u.action=Action::Roam;
++                u.hp=static_cast<float>(u.stats.maxHp);Rescale(u);u.hurtTimer=u.combatTimer=0;
++            }
++            if(nativeHealth==0){u.hp=0;u.action=Action::Dead;}
++            u.nativeLastHealth=nativeHealth;
++            if(u.hurtTimer>0)--u.hurtTimer;
++            if(u.combatTimer>0)--u.combatTimer;
++            if((!options.nativeScaling||!options.rpg)&&u.nativeMaxHp>0)u.hp=a->colChkInfo.health;
++            if(frame%20==0){u.height=(std::max)(50.0f,a->focus.pos.y-a->world.pos.y);}
++        }
++        if(frame%8==static_cast<int>(u.serial%8)&&DistanceXZ(a->world.pos,GET_PLAYER(play)->actor.world.pos)<options.plateDistance){
++            Vec3f head=a->world.pos;head.y+=u.height;
++            u.visible=navigation.Clear(play,play->mainCamera.eye,head,0);
++        }
++    }
++    if(options.regen&&gSaveContext.health>0&&gSaveContext.health<gSaveContext.healthCapacity&&
++       frame-lastHurt>=options.regenDelay*SimHz){
++        regenBank+=gSaveContext.healthCapacity*(options.regenPercent/100.0f)*RecoveryBonus(CurrentPlayerStats())/SimHz;
++        int amount=static_cast<int>(regenBank);
++        if(amount>0){gSaveContext.health=(std::min)(int(gSaveContext.healthCapacity),int(gSaveContext.health)+amount);regenBank-=amount;}
++    }else regenBank=0;
++    for(auto& text:combatText){--text.life;text.pos.y+=0.65f;}
++    combatText.erase(std::remove_if(combatText.begin(),combatText.end(),[](const CombatText& t){return t.life<=0;}),combatText.end());
++}
++void OnHealthChange(int16_t amount) {
++    if(amount<0){lastHurt=frame;regenBank=0;}
++}
++void OnGameLoaded() {
++    activeScene=-1;lastHurt=frame;lastLevel=CurrentPlayerStats().level;
++}
++void OnWorldDestroyed() {
++    // Engine owns actor destruction; never walk old pointers during teardown.
++    units.clear();hits.clear();navigation.Reset();combatText.clear();activeScene=-1;activeRoom=-128;
++    enemyRespawns.clear();botRespawns.clear();bossHomeValid.fill(false);
++    for(auto& boss:bossViews)boss={};
++}
++} // namespace Nxt
++
++extern "C" void Nxt_RecordCollision(Actor* attacker,Actor* defender,uint8_t touchDamage){
++    if(!Nxt::options.enabled||!attacker||!defender)return;
++    if(Nxt::Find(defender)|| (gPlayState&&defender==&GET_PLAYER(gPlayState)->actor))
++        Nxt::hits[defender]={Nxt::ResolveSource(attacker),Nxt::frame,touchDamage};
++}
++extern "C" int Nxt_ApplyNativeDamage(Actor* actor){
++    using namespace Nxt;
++    Unit* u=Find(actor);
++    if(!options.enabled||!options.rpg||!options.nativeScaling||!gPlayState||!SceneEnabled(gPlayState->sceneNum)||!u||!u->native)return -1;
++    if(actor->colChkInfo.damage==0)return actor->colChkInfo.health;
++    Actor* source=nullptr;auto hit=hits.find(actor);
++    if(hit!=hits.end()&&frame-hit->second.tick<8)source=hit->second.source;
++    if(!source&&gPlayState&&DistanceXZ(actor->world.pos,GET_PLAYER(gPlayState)->actor.world.pos)<160)
++        source=&GET_PLAYER(gPlayState)->actor;
++    u->hurtTimer=0;
++    HitUnit(*u,source,actor->colChkInfo.damage);
++    int proxy=u->hp<=0?0:Clamp(static_cast<int>(std::ceil(u->hp/u->stats.maxHp*u->nativeMaxHp)),1,u->nativeMaxHp);
++    actor->colChkInfo.health=static_cast<uint8_t>(proxy);
++    u->nativeLastHealth=proxy;
++    return proxy;
++}
++extern "C" int16_t Nxt_AdjustPlayerDamage(PlayState* play,int16_t amount){
++    using namespace Nxt;
++    if(amount>=0||!options.enabled||!options.rpg||!play||!SceneEnabled(play->sceneNum)||skipDamageConversion)return amount;
++    // Lethal scripted hazards retain their vanilla semantics (void/crush/event damage).
++    if(-int(amount)>=gSaveContext.healthCapacity)return amount;
++    Unit* attacker=nullptr;auto hit=hits.find(&GET_PLAYER(play)->actor);
++    if(hit!=hits.end()&&frame-hit->second.tick<8)attacker=Find(hit->second.source);
++    if(!attacker||(attacker->native&&!options.nativeScaling))return amount;
++    Stats stats=attacker->stats;
++    float power=Clamp(-amount/8.0f,0.12f,4.0f);
++    int damage=Damage(stats.attack,CurrentPlayerStats().defense,power*options.damageRate);
++    return static_cast<int16_t>(-HealthUnits(damage,CurrentPlayerStats().maxHp,gSaveContext.healthCapacity));
++}
+--- /dev/null
++++ b/soh/soh/Enhancements/NxtRpg/NxtWorld.h
+@@ -0,0 +1,86 @@
++#pragma once
++#include "NxtRules.h"
++#include <array>
++#include <string>
++#include <unordered_map>
++#include <vector>
++#include "functions.h"
++#include "variables.h"
++#include "macros.h"
++#define NXT_CVAR(name) "gNxt." name
++namespace Nxt {
++enum class Role : uint8_t { Vanguard, Skirmisher, Mender };
++enum class Action : uint8_t { Roam, Pursue, Attack, Recover, Cast, Dead, Depart };
++struct Unit {
++    Actor* actor = nullptr;
++    uint32_t serial = 0, seed = 1;
++    Stats stats;
++    float hp = 1, displayHp = 1;
++    float radius = 20, height = 60, modelScale = 0.01f;
++    float speed = 0, animFrame = 0, threat = 0;
++    Vec3f home{}, goal{}, castOrigin{};
++    std::vector<int> path;
++    size_t pathCursor = 0;
++    Actor* target = nullptr;
++    uint32_t targetSerial = 0;
++    int thinkTimer = 0, cooldown = 0, actionTimer = 0, hurtTimer = 0, combatTimer = 0;
++    int abilityTimer = 160, attackDuration = 12;
++    float castRadius = 420;
++    int stuckTimer = 0, castDuration = 0, lastPlayerTag = -100000, nativeMaxHp = 0, nativeLastHealth = -1;
++    int profile = 0, bossIndex = -1, squad = -1, animation = -1, color = 0;
++    int scaledForLevel = 0, scaledForRevision = 0;
++    bool bot = false, raid = false, berserk = false, native = false, awarded = false, enraged = false;
++    bool visible = true;
++    Role role = Role::Vanguard;
++    Action action = Action::Roam;
++    std::string name;
++};
++struct Options {
++    bool enabled = true, rpg = true, bots = true, enemies = true, bosses = true, nativeScaling = true;
++    bool regen = true, plates = true, hud = true, friendlyPlates = true, sharing = true;
++    int botCount = 30, indoorCount = 10, perScene = -1, enemyRatio = 2, enemyCap = 90;
++    int raidSize = 12, raidCap = 36, variance = 3, berserkChance = 20;
++    int respawnSeconds = 35, bossRespawnMinutes = 20, bossDuration = 300;
++    int regenDelay = 7, plateLimit = 24, plateDistance = 1500;
++    float xpRate = 1, damageRate = 1, regenPercent = 3, bossHpRate = 1, botPower = 1;
++};
++struct BossView { std::string name; int level = 1; float hp = 0, maxHp = 1; int cooldown = 0, raiders = 0;
++                  bool alive = false, engaged = false; };
++struct CombatText { Vec3f pos; std::string text; uint32_t color; int life; };
++extern Options options;
++extern std::unordered_map<Actor*, Unit> units;
++extern int botActorId, enemyActorId, frame;
++extern std::array<BossView, BossCount> bossViews;
++extern std::vector<CombatText> combatText;
++
++bool Running(PlayState* play);
++bool SceneEnabled(int scene);
++bool CombatScene(int scene);
++const char* SceneKind(int scene);
++const char* ActionName(Action action);
++const char* BossName(int index);
++const char* ProfileName(int index);
++const char* RoleName(Role role);
++Stats CurrentPlayerStats();
++Unit* Find(Actor* actor);
++bool Alive(const Unit& unit);
++float DistanceXZ(const Vec3f& a, const Vec3f& b);
++void InitActors();
++void AddUnit(Actor* actor, bool bot);
++void RemoveUnit(Actor* actor);
++void UpdateUnit(Unit& unit, PlayState* play);
++void HitUnit(Unit& unit, Actor* source, int baseDamage, float power = 1.0f);
++Actor* RecordedHitSource(Actor* defender);
++int RecordedTouchDamage(Actor* defender);
++void DamagePlayer(PlayState* play, Unit& source, float power);
++void Award(Unit& unit);
++void Rescale(Unit& unit);
++void AddText(const Vec3f& pos, const std::string& text, uint32_t color);
++void RequestRepopulate();
++int DesiredBots(int scene);
++int DesiredEnemies(int scene);
++int LivingCount(bool bots, bool raidOnly = false);
++const std::string& Status();
++void RegisterGui();
++void OpenSettings();
++} // namespace Nxt
+--- a/soh/soh/OTRGlobals.cpp
++++ b/soh/soh/OTRGlobals.cpp
+@@ -1,4 +1,4 @@
+-﻿#include "OTRGlobals.h"
++#include "OTRGlobals.h"
+ #include "OTRAudio.h"
+ #include <algorithm>
+ #include <atomic>
+@@ -276,7 +276,7 @@
+ static bool sohArchiveVersionMatch = false;
+ 
+ OTRGlobals::OTRGlobals() {
+-    context = Ship::Context::CreateUninitializedInstance("Ship of Harkinian", appShortName, "shipofharkinian.json");
++    context = Ship::Context::CreateUninitializedInstance("Ocarina of Time NXT", appShortName, "shipofharkinian.json");
+ 
+     portArchivePath = Ship::Context::LocateFileAcrossAppDirs("soh.o2r");
+     OTRVersion portArchiveVersion = DetectOTRVersion("soh.o2r", false);
+@@ -856,7 +856,7 @@
+     // populated here rather than in Menu::InitElement (where the window backends are handled).
+     SohGui::GetSohMenu()->UpdateAudioBackendObjects();
+ 
+-    SPDLOG_INFO("Starting Ship of Harkinian version {} (Branch: {} | Commit: {})", (char*)gBuildVersion,
++    SPDLOG_INFO("Starting Ocarina of Time NXT (Shipwright) version {} (Branch: {} | Commit: {})", (char*)gBuildVersion,
+                 (char*)gGitBranch, (char*)gGitCommitHash);
+ 
+     auto loader = context->GetResourceManager()->GetResourceLoader();
+--- a/soh/soh/SohGui/SohMenuEnhancements.cpp
++++ b/soh/soh/SohGui/SohMenuEnhancements.cpp
+@@ -1,4 +1,5 @@
+-﻿#include "SohMenu.h"
++#include "SohMenu.h"
++#include "soh/Enhancements/NxtRpg/NxtGui.h"
+ #include <soh/Enhancements/enhancementTypes.h>
+ #include "soh/Enhancements/SwitchAge.h"
+ #include "soh/Enhancements/AdultMasks.h"
+@@ -197,6 +198,13 @@
+ void SohMenu::AddMenuEnhancements() {
+     // Add Enhancements Menu
+     AddMenuEntry("Enhancements", CVAR_SETTING("Menu.EnhancementsSidebarSection"));
++
++    WidgetPath nxtPath = { "Enhancements", "NXT RPG", SECTION_COLUMN_1 };
++    AddSidebarEntry("Enhancements", nxtPath.sidebarName, 1);
++    AddWidget(nxtPath, "Ocarina of Time NXT", WIDGET_SEPARATOR_TEXT);
++    AddWidget(nxtPath, "Open RPG control panel", WIDGET_BUTTON)
++        .Options(ButtonOptions().Tooltip("Player stats, adventurer population, encounters, world bosses and HUD settings.").Size(Sizes::Inline))
++        .Callback([](WidgetInfo&) { Nxt::OpenSettings(); });
+ 
+     // Quality of Life
+     WidgetPath path = { "Enhancements", "Quality of Life", SECTION_COLUMN_1 };
+--- a/soh/src/code/z_actor.c
++++ b/soh/src/code/z_actor.c
+@@ -1,4 +1,5 @@
+ #include "global.h"
++#include "soh/Enhancements/NxtRpg/NxtBridge.h"
+ #include "vt.h"
+ 
+ #include "overlays/actors/ovl_Arms_Hook/z_arms_hook.h"
+@@ -4775,6 +4776,10 @@
+ }
+ 
+ u8 Actor_ApplyDamage(Actor* actor) {
++    const int nxtHealth = Nxt_ApplyNativeDamage(actor);
++    if (nxtHealth >= 0) {
++        return (u8)nxtHealth;
++    }
+     if (actor->colChkInfo.damage >= actor->colChkInfo.health) {
+         actor->colChkInfo.health = 0;
+     } else {
+--- a/soh/src/code/z_collision_check.c
++++ b/soh/src/code/z_collision_check.c
+@@ -1,4 +1,5 @@
+ #include "global.h"
++#include "soh/Enhancements/NxtRpg/NxtBridge.h"
+ #include "vt.h"
+ #include "overlays/effects/ovl_Effect_Ss_HitMark/z_eff_ss_hitmark.h"
+ #include "soh/Enhancements/game-interactor/GameInteractor.h"
+@@ -1741,6 +1742,7 @@
+     ac->ac = at->actor;
+     acInfo->acHit = at;
+     acInfo->acHitInfo = atInfo;
++    Nxt_RecordCollision(at->actor, ac->actor, atInfo->toucher.damage);
+     acInfo->bumperFlags |= BUMP_HIT;
+     if (ac->actor != NULL) {
+         ac->actor->colChkInfo.acHitEffect = atInfo->toucher.effect;
+--- a/soh/src/code/z_parameter.c
++++ b/soh/src/code/z_parameter.c
+@@ -1,4 +1,5 @@
+ #include "global.h"
++#include "soh/Enhancements/NxtRpg/NxtBridge.h"
+ #include "vt.h"
+ #include "textures/parameter_static/parameter_static.h"
+ #include "textures/do_action_static/do_action_static.h"
+@@ -2921,6 +2922,8 @@
+         }
+     }
+ 
++    // Apply after native defense modifiers; scripted lethal damage remains native.
++    healthChange = Nxt_AdjustPlayerDamage(play, healthChange);
+     gSaveContext.health += healthChange;
+ 
+     if (gSaveContext.health > gSaveContext.healthCapacity) {
+--- /dev/null
++++ b/tests/nxt/CMakeLists.txt
+@@ -0,0 +1,19 @@
++cmake_minimum_required(VERSION 3.20)
++project(NxtHeadlessTests LANGUAGES CXX)
++set(CMAKE_CXX_STANDARD 20)
++set(CMAKE_CXX_STANDARD_REQUIRED ON)
++get_filename_component(NXT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
++set(NXT_SRC "${NXT_ROOT}/soh/soh/Enhancements/NxtRpg")
++add_executable(nxt_tests NxtTests.cpp "${NXT_SRC}/NxtWorld.cpp" "${NXT_SRC}/NxtNavigation.cpp" "${NXT_SRC}/NxtCombat.cpp")
++target_include_directories(nxt_tests PRIVATE "${NXT_ROOT}" "${NXT_ROOT}/soh" "${NXT_ROOT}/soh/include" "${NXT_ROOT}/soh/assets" "${NXT_ROOT}/libultraship/include" "${NXT_ROOT}/libultraship/include/libultraship")
++target_compile_definitions(nxt_tests PRIVATE F3DEX_GBI_2)
++option(NXT_SANITIZE "Run headless tests with address and undefined-behavior sanitizers" OFF)
++if(NXT_SANITIZE AND NOT MSVC)
++ target_compile_options(nxt_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
++ target_link_options(nxt_tests PRIVATE -fsanitize=address,undefined)
++endif()
++if(MSVC)
++ target_compile_options(nxt_tests PRIVATE /utf-8 /Zc:preprocessor)
++endif()
++enable_testing()
++add_test(NAME nxt_headless COMMAND nxt_tests)
+--- /dev/null
++++ b/tests/nxt/NxtTests.cpp
+@@ -0,0 +1,226 @@
++// Headless tests compile the real simulation against the uploaded engine headers.
++// The engine boundary below deliberately uses a synthetic flat collision world.
++// These tests do NOT validate the renderer, ROM assets, real scenes, or gameplay timing.
++#include "soh/Enhancements/NxtRpg/NxtConfig.h"
++#include "soh/Enhancements/NxtRpg/NxtNavigation.h"
++#include "soh/Enhancements/NxtRpg/NxtBridge.h"
++#include <iostream>
++#include <memory>
++#include <stdexcept>
++#include <functional>
++#include <set>
++#include <map>
++#include <cstring>
++#include <climits>
++
++extern "C" { PlayState* gPlayState=nullptr; SaveContext gSaveContext{}; }
++namespace Fixture {
++std::unique_ptr<PlayState> play;
++std::unique_ptr<Player> player;
++std::vector<std::unique_ptr<Actor>> actors;
++std::vector<Vec3s> vertices;
++std::vector<CollisionPoly> polys;
++CollisionHeader header{};
++CollisionPoly floorPoly{};
++std::map<std::string,int> settings;
++std::map<std::string,float> reals;
++bool wet=false,voidFloor=false,wall=false,lowCeiling=false,cutscene=false;
++u32 property=0,exitIndex=0,effect=0,wallDamage=0;
++int assertions=0,groups=0;
++void Check(bool value,const char* expression,int line){++assertions;if(!value)throw std::runtime_error(std::string(expression)+" at line "+std::to_string(line));}
++#define CHECK(expr) Fixture::Check(bool(expr),#expr,__LINE__)
++void NoUpdate(Actor*,PlayState*){}
++void Reset(int scene=SCENE_HYRULE_FIELD){
++ Nxt::OnWorldDestroyed();actors.clear();settings.clear();reals.clear();
++ wet=voidFloor=wall=lowCeiling=cutscene=false;property=exitIndex=effect=wallDamage=0;
++ play=std::make_unique<PlayState>();player=std::make_unique<Player>();gPlayState=play.get();
++ std::memset(&gSaveContext,0,sizeof(gSaveContext));gSaveContext.healthCapacity=48;gSaveContext.health=48;
++ gSaveContext.ship.nxt.level=1;gSaveContext.gameMode=GAMEMODE_NORMAL;
++ play->state.running=true;play->sceneNum=scene;play->actorCtx.actorLists[ACTORCAT_PLAYER].head=&player->actor;
++ player->actor.update=NoUpdate;player->actor.id=ACTOR_PLAYER;player->actor.world.pos={-300,1,-300};
++ play->damagePlayer=[](PlayState*,s32 damage)->s32 {gSaveContext.health=Nxt::Clamp(int(gSaveContext.health)+int(damage),0,int(gSaveContext.healthCapacity));Nxt::OnHealthChange(static_cast<int16_t>(damage));return 1;};
++ vertices.clear();polys.clear();
++ constexpr int size=20;constexpr int spacing=500;
++ for(int z=0;z<=size;++z)for(int x=0;x<=size;++x)vertices.push_back({static_cast<s16>((x-size/2)*spacing),0,static_cast<s16>((z-size/2)*spacing)});
++ for(int z=0;z<size;++z)for(int x=0;x<size;++x){
++  u16 a=z*(size+1)+x,b=a+1,c=a+size+1,d=c+1;
++  CollisionPoly p{};p.normal.y=32767;p.vtxData[0]=a;p.vtxData[1]=c;p.vtxData[2]=b;polys.push_back(p);
++  p.vtxData[0]=b;p.vtxData[1]=c;p.vtxData[2]=d;polys.push_back(p);
++ }
++ header={};header.minBounds={-5000,0,-5000};header.maxBounds={5000,0,5000};
++ header.numVertices=static_cast<u16>(vertices.size());header.vtxList=vertices.data();
++ header.numPolygons=static_cast<u16>(polys.size());header.polyList=polys.data();
++ floorPoly={};floorPoly.normal.y=32767;play->colCtx.colHeader=&header;
++ Nxt::botActorId=700;Nxt::enemyActorId=701;Nxt::ReadOptions();Nxt::OnGameLoaded();
++}
++void Configure(const char* name,int value){settings[std::string("gNxt.")+name]=value;Nxt::ReadOptions();}
++Actor* New(bool bot,Vec3f pos,int params=0){return Actor_Spawn(&play->actorCtx,play.get(),bot?Nxt::botActorId:Nxt::enemyActorId,pos.x,pos.y,pos.z,0,0,0,static_cast<s16>(params));}
++void Run(int frames,bool ai=true){
++ for(int i=0;i<frames;++i){Nxt::Tick();if(player->invincibilityTimer>0)--player->invincibilityTimer;
++  if(ai){std::vector<Actor*> snapshot;for(auto& [a,u]:Nxt::units)if(!u.native&&a->update)snapshot.push_back(a);
++   for(auto* a:snapshot)if(auto* u=Nxt::Find(a);u&&a->update)Nxt::UpdateUnit(*u,play.get());}
++  // Engine destruction is a later pass, matching Actor_Kill's deferred semantics.
++  for(auto& a:actors)if(a&&!a->update){Nxt::RemoveUnit(a.get());a.reset();--play->actorCtx.total;}
++ }
++}
++void Group(const char* title,const std::function<void()>& test){test();++groups;std::cout<<"PASS "<<title<<'\n';}
++}
++namespace Nxt {
++int ConfigInt(const char* key,int fallback){auto i=Fixture::settings.find(key);return i==Fixture::settings.end()?fallback:i->second;}
++float ConfigFloat(const char* key,float fallback){auto i=Fixture::reals.find(key);return i==Fixture::reals.end()?fallback:i->second;}
++}
++// Link-time fixtures, not replacement engine headers. Signatures are checked by the real headers.
++extern "C" {
++void Actor_Kill(Actor* a){a->update=nullptr;}
++Actor* Actor_Spawn(ActorContext* ctx,PlayState*,s16 id,f32 x,f32 y,f32 z,s16 rx,s16 ry,s16 rz,s16 params){
++ auto a=std::make_unique<Actor>();a->id=id;a->params=params;a->world.pos={x,y,z};a->world.rot={rx,ry,rz};a->shape.rot={rx,ry,rz};a->update=Fixture::NoUpdate;
++ Actor* result=a.get();Fixture::actors.push_back(std::move(a));++ctx->total;Nxt::AddUnit(result,id==Nxt::botActorId);return result;
++}
++s32 Player_InCsMode(PlayState*){return Fixture::cutscene;}
++f32 BgCheck_EntityRaycastFloor3(CollisionContext*,CollisionPoly** poly,s32* bg,Vec3f* p){
++ *bg=BGCHECK_SCENE;if(Fixture::voidFloor||std::fabs(p->x)>5000||std::fabs(p->z)>5000){*poly=nullptr;return BGCHECK_Y_MIN;}
++ *poly=&Fixture::floorPoly;return 0;
++}
++s32 BgCheck_EntityLineTest1(CollisionContext*,Vec3f* a,Vec3f* b,Vec3f* hit,CollisionPoly** poly,s32,s32,s32,s32,s32*){
++ if(Fixture::lowCeiling&&((a->y<80&&b->y>=80)||(b->y<80&&a->y>=80))){*hit=*b;*poly=&Fixture::floorPoly;return 1;}
++ if(Fixture::wall&&((a->x<0&&b->x>=0)||(b->x<0&&a->x>=0))){
++  float t=-a->x/(b->x-a->x);float z=a->z+(b->z-a->z)*t;
++  if(std::fabs(z)>300){*hit=*b;*poly=&Fixture::floorPoly;return 1;}
++ }
++ return 0;
++}
++s32 BgCheck_EntitySphVsWall3(CollisionContext*,Vec3f* result,Vec3f* next,Vec3f*,f32,CollisionPoly**,s32*,Actor*,f32){*result=*next;return 0;}
++u32 SurfaceType_GetSceneExitIndex(CollisionContext*,CollisionPoly*,s32){return Fixture::exitIndex;}
++u32 func_80041EA4(CollisionContext*,CollisionPoly*,s32){return Fixture::property;}
++u32 SurfaceType_GetFloorEffect(CollisionContext*,CollisionPoly*,s32){return Fixture::effect;}
++s32 SurfaceType_IsIgnoredByEntities(CollisionContext*,CollisionPoly*,s32){return 0;}
++u32 SurfaceType_IsWallDamage(CollisionContext*,CollisionPoly*,s32){return Fixture::wallDamage;}
++s32 WaterBox_GetSurface1(PlayState*,CollisionContext*,f32,f32,f32* y,WaterBox**){*y=50;return Fixture::wet;}
++s16 Math_SmoothStepToS(s16* v,s16 target,s16 scale,s16 step,s16 minStep){
++ const int diff=static_cast<s16>(target-*v);int amount=diff/(std::max)(1,int(scale));amount=Nxt::Clamp(amount,-int(step),int(step));
++ if(std::abs(amount)<minStep)amount=diff<0?-minStep:minStep;if(std::abs(amount)>std::abs(diff))amount=diff;*v=static_cast<s16>(*v+amount);return static_cast<s16>(diff);
++}
++}
++int main(){
++ using namespace Fixture;using namespace Nxt;
++ try{
++ Group("level progression, caps, bounded combat and deterministic RNG",[]{
++  CHECK(XpRequired(1)==154);uint32_t level=1,xp=0;CHECK(GrantXp(level,xp,154)==1);CHECK(level==2&&xp==0);
++  CHECK(GrantXp(level,xp,UINT32_MAX)==98);CHECK(level==100&&xp==0);CHECK(GrantXp(level,xp,999)==0);
++  uint32_t a=19,b=19;for(int i=0;i<10000;++i){CHECK(NextRandom(a)==NextRandom(b));CHECK(Random01(a)>=0);Random01(b);}
++  a=42;for(int i=0;i<100000;++i){int l=1+NextRandom(a)%100;Stats s=EnemyStats(l,a,i%5==0);
++   CHECK(s.maxHp>0&&s.attack>0&&s.defense>=0);CHECK(VariedLevel(l,10,a)>=1);CHECK(VariedLevel(l,10,a)<=100);
++   int d=Damage(s.attack,s.defense,1.5f,true);CHECK(d>0&&d<=1000000);CHECK(HealthUnits(d,s.maxHp,48)>=1&&HealthUnits(d,s.maxHp,48)<=48);
++  }
++  CHECK(Damage(100,100)<Damage(100,0));CHECK(Damage(100,0,1,true)>Damage(100,0));
++  CHECK(KillXp(10,10,true,false)>KillXp(10,10,false,false));CHECK(BossHealth(PlayerStats(20),12,300,1)>1500);
++ });
++ Group("scene safety and defensive settings",[]{
++  Reset();CHECK(!CombatScene(SCENE_KAKARIKO_VILLAGE));CHECK(!CombatScene(SCENE_MARKET_DAY));CHECK(!CombatScene(SCENE_LINKS_HOUSE));
++  CHECK(CombatScene(SCENE_HYRULE_FIELD));CHECK(CombatScene(SCENE_FOREST_TEMPLE));CHECK(!SceneEnabled(SCENE_DEKU_TREE_BOSS));
++  CHECK(DesiredBots(SCENE_HYRULE_FIELD)==30);CHECK(DesiredBots(SCENE_LINKS_HOUSE)==10);CHECK(DesiredEnemies(SCENE_HYRULE_FIELD)==60);
++  Configure("BotCount",1000);CHECK(options.botCount==50);Configure("BerserkChance",-3);CHECK(options.berserkChance==0);
++  reals["gNxt.XpRate"]=std::numeric_limits<float>::quiet_NaN();ReadOptions();CHECK(options.xpRate==1);
++  settings["gNxt.Scene."+std::to_string(SCENE_HYRULE_FIELD)+".Bots"]=17;CHECK(DesiredBots(SCENE_HYRULE_FIELD)==17);
++ });
++ Group("ground, water, lethal floor, exit and ceiling rejection",[]{
++  Reset();Vec3f p{0,1,0};CHECK(navigation.Ground(play.get(),p));wet=true;CHECK(!navigation.Ground(play.get(),p));wet=false;
++  property=FLOOR_PROPERTY_5;CHECK(!navigation.Ground(play.get(),p));property=FLOOR_PROPERTY_12;CHECK(!navigation.Ground(play.get(),p));property=0;
++  exitIndex=1;CHECK(!navigation.Ground(play.get(),p));exitIndex=0;effect=FLOOR_EFFECT_2;CHECK(!navigation.Ground(play.get(),p));effect=0;
++  wallDamage=1;CHECK(!navigation.Ground(play.get(),p));wallDamage=0;voidFloor=true;CHECK(!navigation.Ground(play.get(),p));voidFloor=false;
++  floorPoly.normal.y=10000;CHECK(!navigation.Ground(play.get(),p));floorPoly.normal.y=32767;
++  wall=true;CHECK(!navigation.Clear(play.get(),{-200,1,1000},{200,1,1000}));CHECK(navigation.Clear(play.get(),{-200,1,0},{200,1,0}));
++ });
++ Group("bounded field navigation, connectivity, routing and distributed spawns",[]{
++  Reset();navigation.Begin(play.get());for(int i=0;i<200&&!navigation.Ready();++i)navigation.Step(play.get());
++  CHECK(navigation.Ready());CHECK(navigation.nodes.size()<=640);CHECK(navigation.ReachableCount()>300);
++  int source=navigation.Nearest({-4000,1,-4000},true),target=navigation.Nearest({4000,1,4000},true);CHECK(!navigation.Route(source,target).empty());
++  std::set<int> quadrants;uint32_t seed=5;for(int i=0;i<50;++i){Vec3f p{};CHECK(navigation.SpawnPoint(play.get(),seed,p));quadrants.insert((p.x>0?1:0)+(p.z>0?2:0));New(true,p);}
++  CHECK(quadrants.size()==4);CHECK(LivingCount(true)==50);
++  lowCeiling=true;Vec3f p{};CHECK(!navigation.SpawnPoint(play.get(),seed,p,true));
++ });
++ Group("safe interior population, live retirement and room cleanup",[]{
++  Reset(SCENE_LINKS_HOUSE);Run(220,false);CHECK(LivingCount(true)==10);CHECK(LivingCount(false)==0);
++  Configure("IndoorCount",3);Run(40);CHECK(LivingCount(true)==3);
++  play->roomCtx.curRoom.num=1;Run(220,false);CHECK(LivingCount(true)==3);CHECK(LivingCount(false)==0);
++  Configure("Enabled",0);Run(1);CHECK(units.empty());
++ });
++ Group("all five bosses, separate reinforcement budget and boss departure",[]{
++  Reset();Configure("Bots",0);Configure("Enemies",0);Run(250,false);
++  std::array<Actor*,5> bosses{};for(auto& [a,u]:units)if(u.bossIndex>=0)bosses[u.bossIndex]=a;
++  for(auto* a:bosses)CHECK(a!=nullptr);
++  for(int i=0;i<5;++i)for(int j=i+1;j<5;++j)CHECK(DistanceXZ(bosses[i]->world.pos,bosses[j]->world.pos)>=1400);
++  player->actor.world.pos=bosses[0]->world.pos;player->actor.world.pos.x+=200;Run(160,false);
++  CHECK(LivingCount(true,true)>0);CHECK(LivingCount(true)==0);CHECK(LivingCount(true,true)<=options.raidCap);
++  Unit* boss=Find(bosses[0]);boss->lastPlayerTag=frame;boss->hp=0;boss->action=Action::Dead;boss->actionTimer=30;Award(*boss);
++  CHECK(gSaveContext.ship.nxt.bossCooldown[0]>0);CHECK(gSaveContext.ship.nxt.bossKills==1);
++  for(auto& [a,u]:units)if(u.raid&&u.squad==0)CHECK(u.action==Action::Depart);
++  Run(90);CHECK(!Find(bosses[0]));Configure("WorldBosses",0);Run(40);for(auto& [a,u]:units)CHECK(u.bossIndex<0&&!u.raid);
++ });
++ Group("combat damage, friendly fire, XP credit and exactly-once rewards",[]{
++  Reset();Configure("Bots",0);Configure("Enemies",0);Configure("WorldBosses",0);Run(160,false);
++  Actor* foe=New(false,{-270,1,-300});Unit* target=Find(foe);target->hp=1;target->hurtTimer=0;target->stats.agility=-1000;
++  auto xp=gSaveContext.ship.nxt.xp;HitUnit(*target,&player->actor,2);CHECK(target->hp==0);CHECK(gSaveContext.ship.nxt.xp>xp);
++  auto awardedXp=gSaveContext.ship.nxt.xp;auto kills=gSaveContext.ship.nxt.kills;Award(*target);CHECK(gSaveContext.ship.nxt.xp==awardedXp&&gSaveContext.ship.nxt.kills==kills);
++  Actor* ally=New(true,{-300,1,-200});float hp=Find(ally)->hp;HitUnit(*Find(ally),&player->actor,20);CHECK(Find(ally)->hp==hp);
++  Actor* another=New(false,{0,1,0});hp=Find(another)->hp;HitUnit(*Find(another),foe,20);CHECK(Find(another)->hp==hp);
++  Unit& attacker=*Find(another);attacker.stats.agility=1000;DamagePlayer(play.get(),attacker,1);CHECK(gSaveContext.health<gSaveContext.healthCapacity);
++  int health=gSaveContext.health;DamagePlayer(play.get(),attacker,1);CHECK(gSaveContext.health==health);
++ });
++ Group("regen combat delay, invulnerability and pause freeze",[]{
++  Reset();Configure("Bots",0);Configure("Enemies",0);Configure("WorldBosses",0);Run(160,false);
++  gSaveContext.health=10;OnHealthChange(-8);Run(6*SimHz,false);CHECK(gSaveContext.health==10);Run(3*SimHz,false);CHECK(gSaveContext.health>10);
++  int before=frame,health=gSaveContext.health;play->pauseCtx.state=1;Run(100,false);CHECK(frame==before&&gSaveContext.health==health);play->pauseCtx.state=0;
++  cutscene=true;Run(100,false);CHECK(frame==before);cutscene=false;
++ });
++ Group("20 percent berserker distribution and live scaling after combat",[]{
++  Reset();Configure("Bots",0);Configure("Enemies",0);Configure("WorldBosses",0);Run(160,false);
++  int berserk=0;for(int i=0;i<10000;++i){Actor* a=New(false,{1000,1,1000});berserk+=Find(a)->berserk;RemoveUnit(a);Actor_Kill(a);actors.back().reset();--play->actorCtx.total;}
++  CHECK(berserk>1750&&berserk<2250);
++  Configure("Enemies",1);Configure("EnemyRatio",1);Configure("EnemyCap",1);
++  Actor* a=New(false,{1000,1,1000});Unit* u=Find(a);u->hp=u->stats.maxHp*.5f;u->combatTimer=10;gSaveContext.ship.nxt.level=40;
++  Run(1,false);CHECK(u->scaledForLevel==1);u->combatTimer=0;Run(1,false);CHECK(u->scaledForLevel==40);CHECK(std::fabs(u->hp/u->stats.maxHp-.5f)<.001f);
++ });
++ Group("native collision proxy, source lifetime and scaling toggle",[]{
++  Reset();Actor native{};native.id=ACTOR_EN_TEST;native.category=ACTORCAT_ENEMY;native.update=NoUpdate;native.colChkInfo.health=10;
++  native.world.pos={-250,1,-300};TrackNative(&native);CHECK(Find(&native));native.colChkInfo.damage=2;
++  Nxt_RecordCollision(&player->actor,&native,2);int proxy=Nxt_ApplyNativeDamage(&native);CHECK(proxy>=0&&proxy<=10);
++  Actor* bot=New(true,{-230,1,-300});Nxt_RecordCollision(bot,&native,2);CHECK(RecordedHitSource(&native)==bot);RemoveUnit(bot);CHECK(RecordedHitSource(&native)==nullptr);
++  Nxt_RecordCollision(&native,&player->actor,8);Configure("ScaleNative",0);CHECK(Nxt_ApplyNativeDamage(&native)==-1);CHECK(Nxt_AdjustPlayerDamage(play.get(),-8)==-8);
++  CHECK(Nxt_AdjustPlayerDamage(play.get(),-48)==-48);RemoveUnit(&native);CHECK(RecordedHitSource(&player->actor)==nullptr);
++ });
++ Group("native resurrection and protected story-arena isolation",[]{
++  Reset();Configure("Bots",0);Configure("Enemies",0);Configure("WorldBosses",0);Run(160,false);
++  Actor native{};native.id=ACTOR_EN_TEST;native.category=ACTORCAT_ENEMY;native.update=NoUpdate;native.colChkInfo.health=10;
++  native.world.pos={-250,1,-300};TrackNative(&native);CHECK(Find(&native));
++  native.colChkInfo.health=0;Run(1,false);Award(*Find(&native));CHECK(!Alive(*Find(&native)));CHECK(Find(&native)->awarded);
++  native.colChkInfo.health=10;Run(1,false);CHECK(Alive(*Find(&native)));CHECK(!Find(&native)->awarded);CHECK(Find(&native)->hp==Find(&native)->stats.maxHp);
++  play->sceneNum=SCENE_FOREST_TEMPLE_BOSS;native.colChkInfo.damage=2;CHECK(Nxt_ApplyNativeDamage(&native)==-1);RemoveUnit(&native);
++  TrackNative(&native);CHECK(!Find(&native));
++ });
++ Group("Mender casting and distinct world-boss warning abilities",[]{
++  Reset();Configure("Bots",0);Configure("Enemies",0);Configure("WorldBosses",0);Run(160,false);
++  Actor* healer=New(true,{-300,1,-220},2);Actor* ally=New(true,{-300,1,-180},0);
++  Unit* h=Find(healer);Unit* a=Find(ally);a->hp=20;a->combatTimer=999;h->abilityTimer=0;h->thinkTimer=999;
++  UpdateUnit(*h,play.get());CHECK(h->action==Action::Cast);for(int i=0;i<25;++i)UpdateUnit(*h,play.get());CHECK(a->hp>20);
++  for(int i=0;i<BossCount;++i){Actor* boss=New(false,{1000,1,float(1000+i*400)},0x100|i);Unit* b=Find(boss);
++   b->target=&player->actor;b->abilityTimer=0;b->thinkTimer=999;UpdateUnit(*b,play.get());
++   CHECK(b->action==Action::Cast);CHECK(b->actionTimer==46);CHECK(b->castDuration==46);
++   CHECK(b->castRadius==(i==3?570:i==4?330:440));
++   if(i==4)CHECK(DistanceXZ(b->castOrigin,player->actor.world.pos)<1);else CHECK(DistanceXZ(b->castOrigin,boss->world.pos)<1);
++   b->action=Action::Roam;b->hp=b->stats.maxHp*.2f;UpdateUnit(*b,play.get());CHECK(b->enraged);
++   RemoveUnit(boss);Actor_Kill(boss);
++  }
++ });
++ Group("AI autonomous combat and bounded crowd stress",[]{
++  Reset();Configure("WorldBosses",0);Configure("BotCount",30);Configure("EnemyRatio",2);player->invincibilityTimer=-1;Run(330,false);
++  CHECK(LivingCount(true)==30);CHECK(LivingCount(false)==60);
++  for(auto& [a,u]:units){a->world.pos={-500+static_cast<float>((u.serial%10)*90),1,-500+static_cast<float>((u.serial/10%10)*90)};u.home=u.goal=a->world.pos;u.thinkTimer=0;}
++  Run(240);CHECK(gSaveContext.ship.nxt.kills>0);CHECK(units.size()<=MaxPopulation);
++  Configure("BotCount",50);Configure("EnemyCap",120);Configure("EnemyRatio",4);Run(800);CHECK(units.size()<=MaxPopulation);
++  Configure("BotCount",5);Configure("EnemyCap",10);Run(80);CHECK(LivingCount(true)<=5);CHECK(LivingCount(false)<=10);
++  OnWorldDestroyed();CHECK(units.empty()&&navigation.nodes.empty()&&combatText.empty());
++ });
++ Nxt::OnWorldDestroyed();actors.clear();std::cout<<"PASS "<<groups<<" groups, "<<assertions<<" assertions\n";return 0;
++ }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';Nxt::OnWorldDestroyed();return 1;}
++}
+--- /dev/null
++++ b/tools/nxt/check_core_syntax.py
+@@ -0,0 +1,28 @@
++#!/usr/bin/env python3
++"""Syntax-check NXT core and edited C bridges against this baseline, without external GUI dependencies.
++Requires GCC/G++ with C++20 and GNU C23 support; this is NOT the full game build.
++"""
++from pathlib import Path
++import os
++import re
++import subprocess
++import sys
++
++root = Path(__file__).resolve().parents[2]
++include = [f'-I{root / part}' for part in ('.','soh','soh/src','soh/include','soh/assets','libultraship/include','libultraship/include/libultraship')]
++def run(command: list[str]) -> None:
++    result = subprocess.run(command, cwd=root)
++    if result.returncode:
++        raise SystemExit(result.returncode)
++
++try:
++    for name in ('NxtWorld','NxtNavigation','NxtCombat','NxtActors'):
++        run([os.environ.get('CXX','g++'),'-std=c++20','-DF3DEX_GBI_2',*include,'-fsyntax-only',str(root/'soh/soh/Enhancements/NxtRpg'/f'{name}.cpp')])
++        print(f'PASS {name}.cpp', flush=True)
++    flags = [f'-D{key}="{value}"' for key,value in re.findall(r'set\((CVAR_PREFIX_\w+) "([^"]*)"\)',(root/'CMake/soh-cvars.cmake').read_text())]
++    for name in ('z_actor','z_parameter','z_collision_check'):
++        run([os.environ.get('CC','gcc'),'-std=gnu2x','-DF3DEX_GBI_2','-DLOG_LEVEL_GAME_PRINTS=0','-w','-Wno-incompatible-pointer-types','-Wno-int-conversion',*include,*flags,'-fsyntax-only',str(root/'soh/src/code'/f'{name}.c')])
++        print(f'PASS {name}.c', flush=True)
++except FileNotFoundError as error:
++    print(f'Compiler or source missing: {error}', file=sys.stderr)
++    raise SystemExit(2)
