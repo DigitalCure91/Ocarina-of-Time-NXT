@@ -1,12 +1,14 @@
-![Ship of Harkinian](docs/shiptitle.darkmode.png#gh-dark-mode-only)
-![Ship of Harkinian](docs/shiptitle.lightmode.png#gh-light-mode-only)
-
-* [Website](https://www.shipofharkinian.com)
-* [Discord](https://discord.com/invite/harbourmasters)
+# Ocarina-of-Time-NXT
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Build-Nxt.ps1" -Jobs 4
 
 If you're having any trouble after reading through this `README`, feel free to ask for help in the Support text channels. Please keep in mind that we do not condone piracy.
+
+<img width="1660" height="933" alt="1" src="https://github.com/user-attachments/assets/61c50dda-8b12-4df1-a77c-aefcab88aa3b" />
+
+<img width="1652" height="875" alt="2" src="https://github.com/user-attachments/assets/6a07337c-3c07-4a64-bdfa-12d85a596685" />
+
+<img width="1657" height="858" alt="3" src="https://github.com/user-attachments/assets/e32c9423-c251-4e6b-b955-ad5ae4ff5087" />
 
 # Quick Start
 
